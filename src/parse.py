@@ -245,14 +245,38 @@ class ClangParser:
         # Basic feature detection based on token text
         if 'static_assert' in all_token_text:
             features.add('static_assert')  # C++11
-            
-        # Decltype detection (C++11)
         if 'decltype' in all_token_text:
             features.add('decltype')  # C++11
             
-        # Variadic templates detection (C++11)
-        if '...' in all_token_text and ('template' in all_token_text or cursor.kind in [CursorKind.FUNCTION_TEMPLATE, CursorKind.CLASS_TEMPLATE]):
+        if '...' in all_token_text and ('template' in all_token_text or
+                cursor.kind in [CursorKind.FUNCTION_TEMPLATE, CursorKind.CLASS_TEMPLATE]):
             features.add('variadic_templates')  # C++11
+            
+        if 'template' in all_token_text and cursor.kind == CursorKind.VAR_DECL:
+            features.add('variable_templates')  # C++14
+            
+        if cursor.kind == CursorKind.VAR_DECL and cursor.spelling.startswith('pi_v'):
+            features.add('variable_templates')  # C++14
+            
+        if '[' in all_token_text and '=' in all_token_text and ']' in all_token_text and 'lambda_capture_init' in cursor.spelling:
+            features.add('lambda_capture_init')  # C++14
+        elif cursor.kind == CursorKind.LAMBDA_EXPR:
+            capture_init_pattern = False
+            for i in range(len(all_token_spellings) - 2):
+                if all_token_spellings[i] == '[' and all_token_spellings[i+1] != ']' and '=' in all_token_spellings[i+1:i+5]:
+                    capture_init_pattern = True
+                    break
+            if capture_init_pattern:
+                features.add('lambda_capture_init')  # C++14
+                
+        if cursor.spelling == 'constexpr_extension' or 'constexpr_extension' in all_token_text:
+            features.add('constexpr_extension')  # C++14
+        elif 'constexpr' in all_token_spellings and cursor.kind == CursorKind.FUNCTION_DECL:
+            has_complex_logic = False
+            if 'for' in all_token_spellings or 'while' in all_token_spellings:
+                has_complex_logic = True
+            if has_complex_logic:
+                features.add('constexpr_extension')  # C++14
         
         conversion_op_detected = False
         if cursor.kind == CursorKind.CONVERSION_FUNCTION:
@@ -369,49 +393,34 @@ class ClangParser:
             tokens = list(cursor.get_tokens())
             token_spellings = [t.spelling for t in tokens]
             token_str = ' '.join(token_spellings)
-            logging.debug(f"CONSTEXPR_IF DEBUG - IF_STMT at {cursor.location.file.name}:{cursor.location.line}")
-            logging.debug(f"CONSTEXPR_IF DEBUG - Token spellings: {token_spellings}")
             
             # Pattern 1: Direct 'constexpr if' sequence
             constexpr_found = False
             for i, token in enumerate(tokens):
                 if token.spelling == 'constexpr':
                     constexpr_found = True
-                    logging.debug(f"CONSTEXPR_IF DEBUG - Found 'constexpr' at position {i}")
                     if i+1 < len(tokens):
-                        logging.debug(f"CONSTEXPR_IF DEBUG - Next token after 'constexpr': '{tokens[i+1].spelling}'")
                         if tokens[i+1].spelling == 'if':
-                            logging.debug("CONSTEXPR_IF DEBUG - SUCCESS! Found 'constexpr if' pattern")
                             features.add('constexpr_if')  # C++17
                             features.add('if_constexpr')   # Same feature, different name
                             break
                     
-            if not constexpr_found:
-                logging.debug("CONSTEXPR_IF DEBUG - No 'constexpr' token found in this IF_STMT")
-                    
             # Pattern 2: Look for the pattern in the token string with spaces
             if 'constexpr if' in token_str or 'constexpr  if' in token_str:
-                logging.debug("CONSTEXPR_IF DEBUG - SUCCESS! Found 'constexpr if' in token string")
                 features.add('constexpr_if')  # C++17
                 features.add('if_constexpr')   # Same feature, different name
-            else:
-                logging.debug(f"CONSTEXPR_IF DEBUG - 'constexpr if' not found in token string: '{token_str}'")
                 
             # Pattern 3: Look for both tokens in any order but close to each other
             if 'constexpr' in token_spellings and 'if' in token_spellings:
                 constexpr_indices = [i for i, x in enumerate(token_spellings) if x == 'constexpr']
                 if_indices = [i for i, x in enumerate(token_spellings) if x == 'if']
                 
-                logging.debug(f"CONSTEXPR_IF DEBUG - constexpr_indices: {constexpr_indices}, if_indices: {if_indices}")
-                
                 for constexpr_idx in constexpr_indices:
                     for if_idx in if_indices:
                         # Check if 'if' appears after 'constexpr' within a reasonable distance
                         if if_idx > constexpr_idx:
                             distance = if_idx - constexpr_idx
-                            logging.debug(f"CONSTEXPR_IF DEBUG - Distance between 'constexpr' and 'if': {distance}")
                             if distance < 5:  # Allow some tokens between
-                                logging.debug(f"CONSTEXPR_IF DEBUG - SUCCESS! 'constexpr' at {constexpr_idx} and 'if' at {if_idx} are close enough")
                                 features.add('constexpr_if')  # C++17
                                 features.add('if_constexpr')   # Same feature, different name
                                 break
