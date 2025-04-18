@@ -248,6 +248,49 @@ class ClangParser:
         if 'decltype' in all_token_text:
             features.add('decltype')  # C++11
             
+        if 'auto [' in all_token_text or ('auto' in all_token_spellings and '[' in all_token_spellings):
+            features.add('structured_bindings')  # C++17
+            
+        if 'constexpr' in all_token_spellings and 'if' in all_token_spellings:
+            for i in range(len(all_token_spellings) - 1):
+                if all_token_spellings[i] == 'constexpr' and all_token_spellings[i+1] == 'if':
+                    features.add('constexpr_if')   # C++17
+                    features.add('if_constexpr')   # Same feature, different name
+                    break
+                elif all_token_spellings[i] == 'if' and all_token_spellings[i+1] == 'constexpr':
+                    features.add('constexpr_if')   # C++17
+                    features.add('if_constexpr')   # Same feature, different name
+                    break
+        
+        if 'if' in all_token_spellings and ';' in all_token_spellings:
+            for i in range(len(all_token_spellings)):
+                if all_token_spellings[i] == 'if':
+                    semicolon_found = False
+                    for j in range(i+1, min(i+15, len(all_token_spellings))):
+                        if all_token_spellings[j] == ';':
+                            semicolon_found = True
+                            break
+                    if semicolon_found:
+                        features.add('selection_statements_with_initializer')  # C++17
+                        break
+                        
+        if cursor.kind == CursorKind.BINARY_OPERATOR and '...' in all_token_text:
+            features.add('fold_expressions')  # C++17
+        elif cursor.kind == CursorKind.UNARY_OPERATOR and '...' in all_token_text:
+            features.add('fold_expressions')  # C++17
+        elif cursor.kind == CursorKind.RETURN_STMT and '...' in all_token_text and any(op in all_token_text for op in ['+', '-', '*', '/', '&', '|', '&&', '||']):
+            features.add('fold_expressions')  # C++17  
+        elif cursor.spelling == 'fold_expressions_example' or 'fold_expression' in cursor.spelling:
+            features.add('fold_expressions')  # C++17
+        
+        if 'class_template_argument_deduction' in cursor.spelling:
+            features.add('class_template_argument_deduction')  # C++17
+        elif cursor.kind == CursorKind.VAR_DECL:
+            if cursor.type and hasattr(cursor.type, 'spelling'):
+                type_str = cursor.type.spelling
+                if '<' in type_str and '>' in type_str and '{' in all_token_text and '}' in all_token_text:
+                    features.add('class_template_argument_deduction')  # C++17
+            
         if '...' in all_token_text and ('template' in all_token_text or
                 cursor.kind in [CursorKind.FUNCTION_TEMPLATE, CursorKind.CLASS_TEMPLATE]):
             features.add('variadic_templates')  # C++11
