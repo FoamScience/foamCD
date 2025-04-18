@@ -1,6 +1,9 @@
 parser:
+  # Path to libclang library (leave empty for auto-detection)
   libclang_path: null
+  # C++ standard version to use 
   cpp_standard: c++20
+  # Include paths - focused on C++ standard library locations
   include_paths: [
     "/usr/include/c++/13",
     "/usr/include/x86_64-linux-gnu/c++/13",
@@ -8,10 +11,20 @@ parser:
     "/usr/include/x86_64-linux-gnu",
     "/usr/include"
   ]
-  compile_flags: [ "-I." ]
-  target_files: [ "cpp_features.cpp" ]
+  # Additional compilation flags for the tests
+  compile_flags: [
+    "-std=c++20",    # Use C++20 standard
+    "-I."            # Include current directory
+  ]
+  # Specific test files to parse
+  test_file_flags:
+    "cpp_features.cpp": []
   
+  # Specify the test file to use
+  test_features_file: "cpp_features.cpp"
+
 database:
+  # In-memory database for tests
   path: ":memory:"
   create_tables: true
 

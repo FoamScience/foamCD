@@ -113,6 +113,14 @@ public:
 // Type traits
 void type_traits_example();
 
+// Static assert (C++11)
+template<typename T>
+class StaticAssertExample {
+    static_assert(sizeof(T) > 0, "Type must have non-zero size");
+public:
+    StaticAssertExample() {}
+};
+
 //-------------------------------------------------------------------------
 // C++14 features - Declarations only
 //-------------------------------------------------------------------------
