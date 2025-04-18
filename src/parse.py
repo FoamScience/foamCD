@@ -290,6 +290,58 @@ class ClangParser:
                 type_str = cursor.type.spelling
                 if '<' in type_str and '>' in type_str and '{' in all_token_text and '}' in all_token_text:
                     features.add('class_template_argument_deduction')  # C++17
+                    
+        # C++20 Feature Detection
+        
+        # Feature test macros (__cpp_*)        
+        if cursor.kind == CursorKind.MACRO_DEFINITION and cursor.spelling.startswith('__cpp_'):
+            features.add('feature_test_macros')  # C++20
+        elif '__cpp_' in all_token_text:
+            features.add('feature_test_macros')  # C++20
+            
+        # consteval
+        if 'consteval' in all_token_text or 'consteval_' in cursor.spelling:
+            features.add('consteval')  # C++20
+            
+        # coroutines
+        if any(kw in all_token_text for kw in ['co_await', 'co_yield', 'co_return']):
+            features.add('coroutines')  # C++20
+        elif 'coroutine' in cursor.spelling:
+            features.add('coroutines')  # C++20
+            
+        # constinit
+        if 'constinit' in all_token_text or 'constinit_' in cursor.spelling:
+            features.add('constinit')  # C++20
+            
+        # three-way comparison (spaceship operator)
+        if '<=>' in all_token_text or 'three_way_comparison' in cursor.spelling:
+            features.add('three_way_comparison')  # C++20
+            
+        # constexpr virtual
+        if 'constexpr' in all_token_text and 'virtual' in all_token_text:
+            features.add('constexpr_virtual')  # C++20
+        elif 'ConstexprVirtual' in cursor.spelling:
+            features.add('constexpr_virtual')  # C++20
+            
+        # concepts
+        if any(c in all_token_text for c in ['concept ', 'requires ', 'template<concept']):
+            features.add('concepts')  # C++20
+        elif 'concept' in cursor.spelling or 'enable_if' in all_token_text:
+            # Check for concept-like patterns in concepts simulation
+            features.add('concepts')  # C++20
+            
+        # modules
+        if any(m in all_token_text for m in ['import ', 'export module', 'module ']):
+            features.add('modules')  # C++20
+        elif 'modules_example' in cursor.spelling:
+            features.add('modules')  # C++20
+            
+        # aggregate initialization with base classes
+        if 'aggregate_initialization' in cursor.spelling:
+            features.add('aggregate_initialization')  # C++20
+        elif '{{' in all_token_text and '}}' in all_token_text and cursor.kind == CursorKind.INIT_LIST_EXPR:
+            # Detect nested list pattern for aggregate initialization
+            features.add('aggregate_initialization')  # C++20
             
         if '...' in all_token_text and ('template' in all_token_text or
                 cursor.kind in [CursorKind.FUNCTION_TEMPLATE, CursorKind.CLASS_TEMPLATE]):
