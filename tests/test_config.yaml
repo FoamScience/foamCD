@@ -1,0 +1,27 @@
+parser:
+  libclang_path: null
+  cpp_standard: c++20
+  include_paths: [
+    "/usr/include/c++/13",
+    "/usr/include/x86_64-linux-gnu/c++/13",
+    "/usr/lib/gcc/x86_64-linux-gnu/13/include",
+    "/usr/include/x86_64-linux-gnu",
+    "/usr/include"
+  ]
+  compile_flags: [ "-I." ]
+  target_files: [ "cpp_features.cpp" ]
+  
+database:
+  path: ":memory:"
+  create_tables: true
+
+logging:
+  level: DEBUG
+  colored: true
+  file: null
+
+features:
+  detect_inheritance: true
+  detect_virtuals: true
+  parse_doc_comments: true
+  access_level_grouping: true
