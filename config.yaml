@@ -1,0 +1,48 @@
+parser:
+  # Path to libclang library (leave null for auto-detection)
+  libclang_path: null
+  # Path to compilation database directory, main mode of operation
+  compile_commands_dir: /home/fadeli/repos/foamCD/
+  # Directories to skip parsing (these must be absolute paths)
+  prefixes_to_skip:
+    - "/usr/include"
+    - "/usr/include/c++/13"
+    - "/usr/include/x86_64-linux-gnu"
+    - "/usr/include/x86_64-linux-gnu/c++/13"
+    - "/usr/lib/gcc/x86_64-linux-gnu/13/include"
+  # The rest of parser parameters are optional, deduced from compilation db if provided
+  # C++ standard version to use (optional)
+  cpp_standard: c++20
+  # Additional include paths for compilation (optional)
+  include_paths: [
+    "/usr/include",
+    "/usr/include/c++/13",
+    "/usr/include/x86_64-linux-gnu",
+    "/usr/include/x86_64-linux-gnu/c++/13",
+    "/usr/lib/gcc/x86_64-linux-gnu/13/include"
+  ]
+  # Additional compilation flags (optional)
+  compile_flags: []
+  # Specific files to parse (optional, will use compilation database if not specified)
+  target_files: []
+
+database:
+  # SQLite database path, relative to CWD, will be used to check for cached content
+  path: docs.db
+  # Whether to create tables if they don't exist
+  create_tables: true
+
+logging:
+  # Default logging level (DEBUG, INFO, WARNING, ERROR)
+  level: INFO
+  # Whether to use colored logging
+  colored: true
+  # Log file path (null = console only)
+  file: null
+
+features:
+  # Feature detection options
+  detect_inheritance: true
+  detect_virtuals: true
+  parse_doc_comments: true
+  access_level_grouping: true
