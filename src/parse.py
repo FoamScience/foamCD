@@ -234,14 +234,44 @@ class ClangParser:
         return '\n'.join(processed_lines).strip()
     
     def detect_cpp_features(self, cursor: clang.cindex.Cursor) -> Set[str]:
-        """Detect C++ language features used by a cursor"""
+        """Detect C++ language features used by this cursor and its children"""
         features = set()
         
         # Get all available cursor kinds for compatibility checking
         available_cursor_kinds = dir(CursorKind)
-        logging.debug(f'This libclang offers: {available_cursor_kinds}')
+        all_token_spellings = [t.spelling for t in cursor.get_tokens()]
+        all_token_text = ' '.join(all_token_spellings)
         
-        # Basic feature detection based on cursor kind
+        # Basic feature detection based on token text
+        if 'static_assert' in all_token_text:
+            features.add('static_assert')  # C++11
+            
+        # Decltype detection (C++11)
+        if 'decltype' in all_token_text:
+            features.add('decltype')  # C++11
+            
+        # Variadic templates detection (C++11)
+        if '...' in all_token_text and ('template' in all_token_text or cursor.kind in [CursorKind.FUNCTION_TEMPLATE, CursorKind.CLASS_TEMPLATE]):
+            features.add('variadic_templates')  # C++11
+        
+        conversion_op_detected = False
+        if cursor.kind == CursorKind.CONVERSION_FUNCTION:
+            if 'explicit' in all_token_spellings:
+                conversion_op_detected = True
+            elif cursor.semantic_parent and hasattr(cursor, 'spelling'):
+                class_name = cursor.semantic_parent.spelling
+                if class_name and f"{class_name}::operator" in cursor.spelling:
+                    conversion_op_detected = True
+        elif 'explicit' in all_token_spellings and 'operator' in all_token_text:
+            conversion_op_detected = True
+        elif cursor.kind == CursorKind.CXX_METHOD:
+            if 'operator' in cursor.spelling and not cursor.spelling.startswith('operator[]'):
+                if 'explicit' in all_token_spellings:
+                    conversion_op_detected = True
+        if conversion_op_detected:
+            features.add('explicit_conversion')  # C++11
+            features.add('operator_overloading')  # C++98
+        
         if cursor.kind in [CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL]:
             features.add('classes')  # C++98
             base_specifiers = [child for child in cursor.get_children() 
@@ -329,7 +359,6 @@ class ClangParser:
                 features.add('decltype')  # C++11
         
         elif 'STRUCTURED_BINDING' in available_cursor_kinds and cursor.kind == CursorKind.STRUCTURED_BINDING:
-            logging.debug("Detected structured_bindings via CursorKind.STRUCTURED_BINDING")
             features.add('structured_bindings')  # C++17
             
         # TODO: check for selection statements with initializer (C++17)
@@ -461,10 +490,31 @@ class ClangParser:
         
         if cursor.kind == CursorKind.CONVERSION_FUNCTION and 'explicit' in token_spellings:
             features.add('explicit_conversion')  # C++11
+            features.add('operator_overloading')  # C++98
+        elif (cursor.kind == CursorKind.CXX_METHOD and 
+              'operator' in cursor.spelling and 
+              'explicit' in token_spellings):
+            features.add('explicit_conversion')  # C++11
+            logger.debug(f"Detected explicit conversion via method name: {cursor.spelling} in {cursor.location.file.name if cursor.location.file else 'unknown'}:{cursor.location.line}")
+            features.add('operator_overloading')  # C++98
         
         if cursor.kind == CursorKind.CONSTRUCTOR:
+            class_name = cursor.semantic_parent.spelling if cursor.semantic_parent else None
             for child in cursor.get_children():
-                if child.kind == CursorKind.MEMBER_REF_EXPR and child.spelling == cursor.semantic_parent.spelling:
+                if child.kind == CursorKind.MEMBER_REF_EXPR and child.spelling == class_name:
+                    features.add('delegating_constructors')  # C++11
+                    logger.debug(f"Detected delegating constructor via MEMBER_REF_EXPR: {cursor.spelling} in {cursor.location.file.name if cursor.location.file else 'unknown'}:{cursor.location.line}")
+                    break
+            tokens = list(cursor.get_tokens())
+            token_str = ' '.join(t.spelling for t in tokens)
+            if class_name and ': ' + class_name + '(' in token_str:
+                features.add('delegating_constructors')  # C++11
+            # Check for constructor initializers without relying on CXX_CTOR_INITIALIZER
+            # This is a safer approach that works across different libclang versions
+            for child in cursor.get_children():
+                if (hasattr(child, 'referenced') and child.referenced and 
+                    hasattr(child.referenced, 'semantic_parent') and child.referenced.semantic_parent and
+                    child.referenced.semantic_parent.spelling == class_name):
                     features.add('delegating_constructors')  # C++11
                     break
         
@@ -776,7 +826,6 @@ class ClangParser:
                             parent.add_child(entity)
                         else:
                             entities.append(entity)
-                        logger.debug(f"Created placeholder for external entity: {cursor.spelling} in {file_path}")
                 return
 
         # Define which cursors should become their own entities
@@ -940,7 +989,6 @@ def main():
     args = parser.parse_args()
     
     if args.generate_config:
-        from config import Config
         Config.generate_default_config(args.generate_config)
         logger.info(f"Generated default configuration at {args.generate_config}")
         return 0
@@ -975,7 +1023,7 @@ def main():
     
     try:
         # Command line args have priority over config values
-        compile_commands_dir = args.compile_commands or config_obj.get('parser.compile_commands_dir')
+        compile_commands_dir = args.compile_commands_dir or config_obj.get('parser.compile_commands_dir')
         if compile_commands_dir:
             logger.info(f"Using compilation database from: {compile_commands_dir}")
         else:
@@ -1002,11 +1050,40 @@ def main():
                              Kudos to you for somehow missing every single option! Get it together please!\nTraceback: {traceback.format_exc()}""")
                 return 1
             parsed_count = 0
+            unchanged_count = 0
+            error_count = 0
+            
             for filepath in target_files:
+                if not os.path.exists(filepath):
+                    logger.warning(f"File not found: {filepath}")
+                    error_count += 1
+                    continue
+                    
+                # Check if the file has changed since last parsing
+                if db:
+                    file_stats = os.stat(filepath)
+                    last_modified = int(file_stats.st_mtime)
+                    
+                    with open(filepath, 'rb') as f:
+                        file_content = f.read()
+                        file_hash = hashlib.md5(file_content).hexdigest()
+                    
+                    if not db.file_changed(filepath, last_modified, file_hash):
+                        cached_entities = db.get_entities_by_file(filepath)
+                        if cached_entities:
+                            logger.debug(f"Using cached entities for unchanged file: {filepath}")
+                            parser.entities[filepath] = cached_entities
+                            unchanged_count += 1
+                            continue
+                
                 logger.debug(f"Parsing file: {filepath}")
                 entities = parser.parse_file(filepath)
-                parsed_count += len(entities)
-            logger.info(f"Parsed {parsed_count} top-level entities")
+                if entities:
+                    parsed_count += 1
+                else:
+                    error_count += 1
+            
+            logger.info(f"Processing complete: {parsed_count} parsed, {unchanged_count} unchanged, {error_count} errors (from {len(target_files)} total files)")
         
         logger.info("Parsing complete")
         return 0
