@@ -12,6 +12,7 @@ from logs import setup_logging
 from db import EntityDatabase
 from config import Config
 from feature_detectors import FeatureDetectorRegistry
+from plugin_system import PluginManager
 
 logger = setup_logging()
 
@@ -149,13 +150,34 @@ CPP_FEATURES = {
 class ClangParser:
     """Parser for C++ code using libclang"""
     
-    def __init__(self, compilation_database_dir: str = None, db: Optional[EntityDatabase] = None, config: Optional[Config] = None):
+    def __init__(self, compilation_database_dir: str = None, db: Optional[EntityDatabase] = None, 
+                 config: Optional[Config] = None, plugin_dirs: List[str] = None, 
+                 disable_plugins: bool = False):
         if not LIBCLANG_CONFIGURED:
             raise ImportError("libclang is not properly configured. Parser functionality is unavailable.")
         self.config = config or Config()
         self.index = clang.cindex.Index.create()
         self.entities: Dict[str, List[Entity]] = {}
         self.db = db
+        
+        # Initialize plugin system if not disabled
+        self.disable_plugins = disable_plugins
+        if not disable_plugins:
+            if plugin_dirs is None and self.config:
+                plugin_dirs = self.config.get("parser.plugin_dirs", [])
+            plugin_config = None
+            if self.config:
+                plugin_config = self.config.get("parser.plugins", {})
+            self.plugin_manager = PluginManager(plugin_dirs, plugin_config)
+            self.plugin_manager.discover_plugins()
+            plugin_count = len(self.plugin_manager.detectors)
+            if plugin_count > 0:
+                logger.info(f"Loaded {plugin_count} DSL feature detectors from plugins")
+                if self.plugin_manager.disabled_plugins:
+                    logger.info(f"Disabled plugins: {', '.join(self.plugin_manager.disabled_plugins)}")
+                if self.plugin_manager.only_plugins:
+                    logger.info(f"Only using whitelisted plugins: {', '.join(self.plugin_manager.only_plugins)}")
+            
         if compilation_database_dir:
             try:
                 self.compilation_database = clang.cindex.CompilationDatabase.fromDirectory(compilation_database_dir)
@@ -234,16 +256,41 @@ class ClangParser:
             processed_lines.append(line.strip())
         return '\n'.join(processed_lines).strip()
     
-    def detect_cpp_features(self, cursor: clang.cindex.Cursor) -> Set[str]:
-        """Detect C++ language features used by this cursor and its children"""
+    def detect_cpp_features(self, cursor: clang.cindex.Cursor, entity=None) -> Set[str]:
+        """Detect C++ language features used by this cursor and its children
+        
+        Args:
+            cursor: libclang cursor for the entity
+            entity: Optional Entity object to populate with custom fields
+            
+        Returns:
+            Set of detected feature names
+        """
         # Get token information once for efficiency
         all_token_spellings = [t.spelling for t in cursor.get_tokens()]
         all_token_text = ' '.join(all_token_spellings)
         available_cursor_kinds = dir(CursorKind)
         
+        # Detect standard C++ features
         registry = FeatureDetectorRegistry()
         registry.register_all_detectors()
         features = registry.detect_features(cursor, all_token_spellings, all_token_text, available_cursor_kinds)
+        
+        # Detect DSL features from plugins if enabled
+        if not self.disable_plugins and hasattr(self, 'plugin_manager'):
+            dsl_result = self.plugin_manager.detect_features(
+                cursor, all_token_spellings, all_token_text, available_cursor_kinds
+            )
+            
+            # Add DSL features to the set
+            if dsl_result['features']:
+                features.update(dsl_result['features'])
+                logger.debug(f"Detected DSL features: {', '.join(dsl_result['features'])}")
+            
+            # Add custom fields to the entity if provided
+            if entity and dsl_result['custom_fields']:
+                entity.custom_fields.update(dsl_result['custom_fields'])
+                logger.debug(f"Added custom fields: {', '.join(dsl_result['custom_fields'].keys())}")
         
         return features
 
@@ -294,7 +341,8 @@ class ClangParser:
         entity.linkage = cursor.linkage
         if cursor.type and cursor.type.spelling:
             entity.type_info = cursor.type.spelling
-        entity.cpp_features = self.detect_cpp_features(cursor)
+        # Pass entity to feature detection to allow plugins to add custom fields
+        entity.cpp_features = self.detect_cpp_features(cursor, entity)
         
         # Process method/class-specific attributes
         self._process_method_classification(entity, cursor)
@@ -601,11 +649,39 @@ class ClangParser:
         else:
             logger.info(f"Creating new SQLite database {output_path}")
             db = EntityDatabase(output_path)
+            
+            # First pass: Store all entities without children to establish UUIDs
             for file_entities in self.entities.values():
                 for entity in file_entities:
-                    db.store_entity(entity.to_dict())
+                    self._export_entity(db, entity)
+                
             db.close()
             logger.info(f"Exported entities to {output_path}")
+            
+    def _export_entity(self, db, entity):
+        """Helper method to recursively export an entity and its children to the database
+        
+        Args:
+            db: EntityDatabase instance
+            entity: Entity to export
+        """
+        # Create entity dictionary with proper parent-child relationships
+        entity_dict = entity.to_dict()
+        
+        # Store custom fields if any from DSL plugins
+        if hasattr(entity, 'custom_fields') and entity.custom_fields:
+            entity_dict['custom_fields'] = entity.custom_fields
+        
+        # Remove children from dictionary - we'll process them separately
+        # to maintain proper parent-child relationships
+        children = entity_dict.pop('children', [])
+        
+        # Store the entity
+        db.store_entity(entity_dict)
+        
+        # Process children recursively
+        for child in entity.children:
+            self._export_entity(db, child)
 
 def get_source_files_from_compilation_database(compilation_database):
     """Extract source files from compilation database
@@ -659,14 +735,97 @@ def main():
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--test-libclang', action='store_true', help='Test libclang configuration and print diagnostic information')
     parser.add_argument('--debug-libclang', action='store_true', help='Enable detailed debug output for libclang configuration')
+    
+    # Plugin system options
+    plugin_group = parser.add_argument_group('Plugin Options')
+    plugin_group.add_argument('--plugin-dir', action='append', help='Additional plugin directory for DSL feature detectors')
+    plugin_group.add_argument('--disable-plugins', action='store_true', help='Disable plugin system entirely')
+    plugin_group.add_argument('--list-plugins', action='store_true', help='List all available plugins and exit')
+    plugin_group.add_argument('--disable-plugin', action='append', dest='disabled_plugins', 
+                         help='Disable specific plugin by name, can be used multiple times')
+    plugin_group.add_argument('--only-plugin', action='append', dest='only_plugins',
+                         help='Only enable specified plugin, can be used multiple times')
     args = parser.parse_args()
     
     if args.generate_config:
         Config.generate_default_config(args.generate_config)
         logger.info(f"Generated default configuration at {args.generate_config}")
         return 0
+        
     config_obj = Config(args.config)
     logger = setup_logging(args.verbose or args.debug_libclang)
+    
+    # Handle plugin listing if requested
+    if args.list_plugins and not args.disable_plugins:
+        # Get plugin configuration from both config file and command line args
+        plugin_config = config_obj.get('parser.plugins', {})
+        if args.disabled_plugins:
+            plugin_config['disabled_plugins'] = args.disabled_plugins
+        if args.only_plugins:
+            plugin_config['only_plugins'] = args.only_plugins
+            
+        plugin_dirs = args.plugin_dir or config_obj.get("parser.plugin_dirs", [])
+        
+        # Create a single plugin manager to discover all plugins
+        plugin_manager = PluginManager(plugin_dirs)
+        
+        # First do a discovery pass without filtering to find all available plugins
+        logger.info("Discovering all available plugins...")
+        plugin_manager.plugins_enabled = True  # Temporarily enable all plugins
+        plugin_manager.disabled_plugins = set()
+        plugin_manager.only_plugins = set()
+        plugin_manager.discover_plugins()
+        
+        # Get all available plugin names
+        all_plugins = set(plugin_manager.detectors.keys())
+        
+        # Now determine which would be enabled with current configuration
+        enabled_plugins = set()
+        for plugin_name in all_plugins:
+            if plugin_config.get('disabled_plugins') and plugin_name in plugin_config.get('disabled_plugins', []):
+                # Plugin is explicitly disabled
+                continue
+                
+            if plugin_config.get('only_plugins') and plugin_name not in plugin_config.get('only_plugins', []):
+                # Plugin is not in whitelist
+                continue
+                
+            # Plugin would be enabled
+            enabled_plugins.add(plugin_name)
+        
+        if plugin_manager.detectors:
+            print("Available DSL feature detectors:")
+            print("-" * 100)
+            print(f"{'Name':<20} {'Status':<10} {'Version':<10} {'Description':<50}")
+            print("-" * 100)
+            for name, detector in sorted(plugin_manager.detectors.items()):
+                status = "Enabled" if name in enabled_plugins else "Disabled"
+                print(f"{name:<20} {status:<10} {detector.cpp_version:<10} {detector.description:<50}")
+                
+            # Show custom entity fields if any exist
+            if plugin_manager.custom_entity_fields:
+                print("\nCustom entity fields:")
+                print("-" * 100)
+                print(f"{'Field Name':<25} {'Type':<10} {'Plugin':<15} {'Status':<10} {'Description':<30}")
+                print("-" * 100)
+                for field_name, field_def in sorted(plugin_manager.custom_entity_fields.items()):
+                    plugin = field_def['plugin']
+                    status = "Enabled" if plugin in enabled_plugins else "Disabled"
+                    print(f"{field_name:<25} {field_def['type']:<10} {plugin:<15} {status:<10} {field_def['description']:<30}")
+                    
+            # Show plugin configuration summary
+            print("\nPlugin configuration:")
+            print("-" * 100)
+            if plugin_config.get('disabled_plugins'):
+                print(f"Disabled plugins: {', '.join(plugin_config.get('disabled_plugins'))}")
+            if plugin_config.get('only_plugins'):
+                print(f"Whitelisted plugins: {', '.join(plugin_config.get('only_plugins'))}")
+            if not plugin_config.get('disabled_plugins') and not plugin_config.get('only_plugins'):
+                print("All discovered plugins are enabled")
+        else:
+            print("No plugins found.")
+            
+        return 0
     
     if args.debug_libclang:
         logger.debug("Libclang debugging enabled")
@@ -703,7 +862,24 @@ def main():
             logger.warning("No compilation database provided, using default compilation settings")
         db_path = args.output or config_obj.get('database.path', 'docs.db')
         db = EntityDatabase(db_path)
-        parser = ClangParser(compile_commands_dir, db, config_obj)
+        
+        # Setup plugin configuration from both config file and command line args
+        plugin_config = config_obj.get('parser.plugins', {})
+        
+        # Command line arguments override config file settings
+        if args.disabled_plugins:
+            plugin_config['disabled_plugins'] = args.disabled_plugins
+        if args.only_plugins:
+            plugin_config['only_plugins'] = args.only_plugins
+        
+        # Initialize parser with plugin support
+        parser = ClangParser(
+            compilation_database_dir=compile_commands_dir,
+            db=db,
+            config=config_obj,
+            plugin_dirs=args.plugin_dir,
+            disable_plugins=args.disable_plugins
+        )
         
         if args.file:
             if not os.path.exists(args.file):

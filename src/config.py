@@ -19,11 +19,17 @@ DEFAULT_CONFIG = {
             "/usr/lib",
             "/usr/include/x86_64-linux-gnu"
         ],
+        "plugins": {
+            "enabled": True,          # Whether to enable the plugin system
+            "disabled_plugins": [],    # List of plugin names to disable
+            "only_plugins": []         # Whitelist of plugin names to enable (if empty, all non-disabled plugins are enabled)
+        },
         # The rest of parser parameters are deduced from compile_commands.json file if supplied
         "cpp_standard": "c++20",      # C++ standard version to use, optional
         "include_paths": [],          # Additional include paths for compilation, optional
         "compile_flags": [],          # Additional compilation flags
         "target_files": [],           # Files to parse
+        "plugin_dirs": [],            # Additional plugin directories to search
     },
     "database": {
         "path": "docs.db",      # SQLite database path

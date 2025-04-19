@@ -91,6 +91,29 @@ class EntityDatabase:
             CREATE INDEX IF NOT EXISTS idx_entity_features_entity_uuid ON entity_features (entity_uuid)
             ''')
             
+            # Custom entity fields table for DSL plugin data
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS custom_entity_fields (
+                entity_uuid TEXT,
+                field_name TEXT,
+                field_type TEXT,
+                text_value TEXT,
+                int_value INTEGER,
+                real_value REAL,
+                bool_value BOOLEAN,
+                json_value TEXT,
+                plugin_name TEXT,
+                PRIMARY KEY (entity_uuid, field_name),
+                FOREIGN KEY (entity_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
+            )
+            ''')
+            
+            # Create index on entity_uuid for faster custom field lookup
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_custom_entity_fields_entity_uuid 
+            ON custom_entity_fields (entity_uuid)
+            ''')
+            
             # Method classification table
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS method_classification (
@@ -392,85 +415,167 @@ class EntityDatabase:
                     (entity_uuid, tag_name, content)
                     VALUES (?, ?, ?)
                     ''', (uuid, tag, content))
-
         except sqlite3.Error as e:
             logger.error(f"Error storing parsed documentation for {uuid}: {e}")
             raise
+                    
+    def _store_custom_entity_fields(self, uuid: str, custom_fields: Dict[str, Any]) -> None:
+        """Store custom entity fields from DSL plugins
+        
+        Args:
+            uuid: Entity UUID
+            custom_fields: Dictionary with custom field values
+        """
+        try:
+            # First, delete any existing custom fields for this entity
+            self.cursor.execute('''
+            DELETE FROM custom_entity_fields
+            WHERE entity_uuid = ?
+            ''', (uuid,))
             
+            # Insert each custom field with appropriate type
+            for field_name, value in custom_fields.items():
+                if value is None:
+                    continue
+                    
+                field_type = None
+                text_value = None
+                int_value = None
+                real_value = None
+                bool_value = None
+                json_value = None
+                plugin_name = None
+                
+                # Determine value type and store in appropriate column
+                if isinstance(value, dict) and 'value' in value and 'type' in value:
+                    # Extended format with metadata
+                    field_type = value['type']
+                    plugin_name = value.get('plugin', None)
+                    actual_value = value['value']
+                else:
+                    # Simple format, just the value
+                    actual_value = value
+                    
+                # Determine type if not explicitly specified
+                if field_type is None:
+                    if isinstance(actual_value, bool):
+                        field_type = 'BOOLEAN'
+                    elif isinstance(actual_value, int):
+                        field_type = 'INTEGER'
+                    elif isinstance(actual_value, float):
+                        field_type = 'REAL'
+                    elif isinstance(actual_value, (dict, list)):
+                        field_type = 'JSON'
+                    else:
+                        field_type = 'TEXT'
+                
+                # Store value in appropriate column based on type
+                if field_type == 'TEXT':
+                    text_value = str(actual_value)
+                elif field_type == 'INTEGER':
+                    int_value = int(actual_value) if actual_value is not None else None
+                elif field_type == 'REAL':
+                    real_value = float(actual_value) if actual_value is not None else None
+                elif field_type == 'BOOLEAN':
+                    bool_value = bool(actual_value) if actual_value is not None else None
+                elif field_type == 'JSON':
+                    import json
+                    json_value = json.dumps(actual_value)
+                
+                self.cursor.execute('''
+                INSERT INTO custom_entity_fields
+                (entity_uuid, field_name, field_type, text_value, int_value, real_value, bool_value, json_value, plugin_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (uuid, field_name, field_type, text_value, int_value, real_value, bool_value, json_value, plugin_name))
+                
+                logger.debug(f"Stored custom field '{field_name}' for entity {uuid}")
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error storing custom entity fields for {uuid}: {e}")
+            raise
+
     def store_entity(self, entity: Dict[str, Any]) -> str:
         """Store an entity in the database with enhanced features
         
         Args:
-            entity: Entity dictionary with fields like uuid, name, kind, file, etc.
+            entity: Entity dictionary
             
         Returns:
             The UUID of the stored entity
         """
         try:
-            # Extract fields from entity dictionary
             uuid = entity['uuid']
             name = entity['name']
             kind = entity['kind']
-            location = entity.get('location', {})
-            file_path = location.get('file') if location else entity.get('file')
-            line = location.get('line') if location else entity.get('line')
-            column = location.get('column') if location else entity.get('column')
-            documentation = entity.get('doc_comment') or entity.get('documentation')
-            parent_uuid = entity.get('parent_uuid')
-            access_level = entity.get('access')
-            type_info = entity.get('type_info')
             
-            # Insert entity
+            # Handle location information in nested dictionary format
+            if 'location' in entity and isinstance(entity['location'], dict):
+                location = entity['location']
+                file_path = location.get('file', None)
+                line = location.get('line', None)
+                column = location.get('column', None)
+                end_line = location.get('end_line', None)
+                end_column = location.get('end_column', None)
+            else:  # Fallback for direct field access
+                file_path = entity.get('file', None)
+                line = entity.get('line', None)
+                column = entity.get('column', None)
+                end_line = entity.get('end_line', None)
+                end_column = entity.get('end_column', None)
+            
+            doc_comment = entity.get('doc_comment', None) or entity.get('documentation', None)
+            access_level = entity.get('access_level', None) or entity.get('access', None)
+            parent_uuid = entity.get('parent_uuid', None)
+            type_info = entity.get('type_info', None)
+            
             self.cursor.execute('''
             INSERT OR REPLACE INTO entities 
-            (uuid, name, kind, file, line, column, documentation, access_level, type_info, parent_uuid)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (uuid, name, kind, file_path, line, column, documentation, 
-                  access_level, type_info, parent_uuid))
-            
-            # Store features if present
-            if 'cpp_features' in entity and entity['cpp_features']:
-                self._store_entity_features(uuid, entity['cpp_features'])
+            (uuid, name, kind, file, line, column, end_line, end_column, documentation, access_level, type_info, parent_uuid)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (uuid, name, kind, file_path, line, column, end_line, end_column, doc_comment, access_level, type_info, parent_uuid))
             
             # Store method classification if present
-            if 'method_info' in entity:
-                self._store_method_classification(uuid, entity['method_info'])
-            
-            # Store class classification if present
-            if 'class_info' in entity:
-                self._store_class_classification(uuid, entity['class_info'])
-            
-            # Store inheritance information
-            if 'base_classes' in entity and entity['base_classes']:
-                self._store_inheritance(uuid, entity['base_classes'])
+            method_info = entity.get('method_info', {})
+            if method_info:
+                self._store_method_classification(uuid, method_info)
                 
-            # Store parsed documentation
-            if 'parsed_doc' in entity and entity['parsed_doc']:
-                try:
-                    self._store_parsed_documentation(uuid, entity['parsed_doc'])
-                except sqlite3.Error as e:
-                    logger.error(f"Error storing parsed documentation for {uuid}: {e}")
+            # Store class classification if present
+            class_info = entity.get('class_info', {})
+            if class_info:
+                self._store_class_classification(uuid, class_info)
+                
+            # Store inheritance relationships if present
+            base_classes = entity.get('base_classes', [])
+            if base_classes:
+                self._store_inheritance(uuid, base_classes)
+                
+            # Store parsed documentation if present
+            parsed_doc = entity.get('parsed_doc', {})
+            if parsed_doc:
+                self._store_parsed_documentation(uuid, parsed_doc)
+                
+            # Store features if present
+            features = entity.get('cpp_features', [])
+            if features:
+                self._store_entity_features(uuid, features)
+                
+            # Store custom fields from DSL plugins if present
+            custom_fields = entity.get('custom_fields', {})
+            if custom_fields:
+                self._store_custom_entity_fields(uuid, custom_fields)
             
-            # Store children if present
-            if 'children' in entity and entity['children']:
-                for child in entity['children']:
-                    # Ensure child has parent_uuid
-                    if 'parent_uuid' not in child:
-                        child['parent_uuid'] = uuid
-                    self.store_entity(child)
-                    
-            # Handle access level-specific members
-            if 'members' in entity:
-                for access, members in entity['members'].items():
-                    for member in members:
-                        if 'parent_uuid' not in member:
-                            member['parent_uuid'] = uuid
-                        if 'access' not in member:
-                            member['access'] = access.upper()
-                        self.store_entity(member)
-            
+            # Store children recursively
+            children = entity.get('children', [])
+            for child in children:
+                self.store_entity(child)
+                
             self.conn.commit()
             return uuid
+            
+        except sqlite3.Error as e:
+            self.conn.rollback()
+            logger.error(f"Error storing entity {entity.get('name', 'unknown')}: {e}")
+            raise        
             
         except sqlite3.Error as e:
             logger.error(f"Error storing entity {entity.get('name')}: {e}")
@@ -559,10 +664,69 @@ class EntityDatabase:
             
             entity['children'] = children
             
+            # Get custom entity fields from DSL plugins
+            custom_fields = self._get_custom_entity_fields(uuid)
+            if custom_fields:
+                entity['custom_fields'] = custom_fields
+                
             return entity
         except sqlite3.Error as e:
             logger.error(f"Error getting entity {uuid}: {e}")
             raise
+    
+    def _get_custom_entity_fields(self, uuid: str) -> Dict[str, Any]:
+        """Get custom entity fields for an entity
+        
+        Args:
+            uuid: UUID of the entity
+            
+        Returns:
+            Dictionary of custom fields with their values
+        """
+        try:
+            self.cursor.execute('''
+            SELECT field_name, field_type, text_value, int_value, real_value, bool_value, json_value, plugin_name
+            FROM custom_entity_fields WHERE entity_uuid = ?
+            ''', (uuid,))
+            
+            custom_fields = {}
+            for row in self.cursor.fetchall():
+                field_name = row[0]
+                field_type = row[1]
+                value = None
+                
+                # Get value based on type
+                if field_type == 'TEXT':
+                    value = row[2]  # text_value
+                elif field_type == 'INTEGER':
+                    value = row[3]  # int_value
+                elif field_type == 'REAL':
+                    value = row[4]  # real_value
+                elif field_type == 'BOOLEAN':
+                    value = bool(row[5])  # bool_value
+                elif field_type == 'JSON':
+                    import json
+                    try:
+                        value = json.loads(row[6]) if row[6] else None  # json_value
+                    except json.JSONDecodeError:
+                        logger.warning(f"Error parsing JSON value for field {field_name}")
+                        value = None
+                
+                plugin_name = row[7]
+                if plugin_name:
+                    custom_fields[field_name] = {
+                        'value': value,
+                        'type': field_type,
+                        'plugin': plugin_name
+                    }
+                else:
+                    custom_fields[field_name] = value
+                    
+            return custom_fields
+            
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving custom fields for entity {uuid}: {e}")
+            return {}
     
     def get_entities_by_file(self, file_path: str) -> List[Dict[str, Any]]:
         """Get all top-level entities in a file
@@ -574,7 +738,6 @@ class EntityDatabase:
             List of entity dictionaries
         """
         try:
-            # Get all entities that belong to the file and have no parent
             self.cursor.execute('''
             SELECT uuid FROM entities 
             WHERE file = ? AND parent_uuid IS NULL

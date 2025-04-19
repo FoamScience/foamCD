@@ -43,6 +43,9 @@ class Entity:
         # Parsed doc comments (maintains markdown format)
         self.parsed_doc = self._parse_doc_comment(doc_comment)
         
+        # Custom fields added by DSL feature detectors
+        self.custom_fields: Dict[str, Any] = {}
+        
         # Generate UUID by hashing entity content
         self.uuid = self._generate_uuid()
     
@@ -148,12 +151,14 @@ class Entity:
             content += f":{self.parent.uuid}"
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
     
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> Dict[str, Any]:
         """Serialize entities to Python dictionaries"""
         result = {
             'uuid': self.uuid,
             'name': self.name,
-            'kind': self.kind.name,
+            'kind': self.kind.name if hasattr(self.kind, 'name') else str(self.kind),
+            # Include parent_uuid explicitly to ensure parent-child relationships are preserved
+            'parent_uuid': self.parent.uuid if self.parent else None,
             'location': {
                 'file': self.file,
                 'line': self.line,
@@ -192,4 +197,9 @@ class Entity:
             result['children'] = [child.to_dict() for child in self.children]
         else:
             result['children'] = [child.to_dict() for child in self.children]
+            
+        # Include any custom fields from DSL feature detectors
+        if self.custom_fields:
+            result['custom_fields'] = self.custom_fields
+            
         return result
