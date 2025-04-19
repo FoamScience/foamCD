@@ -14,7 +14,7 @@ from clang.cindex import CursorKind, AccessSpecifier
 class TestEntity(unittest.TestCase):
     def setUp(self):
         # Create a sample entity for testing
-        self.location = ("/path/to/file.cpp", 10, 5)
+        self.location = ("/path/to/file.cpp", 10, 5, 10, 15)
         self.entity = Entity(
             name="TestClass",
             kind=CursorKind.CLASS_DECL,
@@ -26,7 +26,7 @@ class TestEntity(unittest.TestCase):
         self.child_entity = Entity(
             name="TestMethod",
             kind=CursorKind.CXX_METHOD,
-            location=("/path/to/file.cpp", 15, 10),
+            location=("/path/to/file.cpp", 15, 10, 15, 25),
             doc_comment="Method documentation",
             parent=self.entity
         )
@@ -39,6 +39,8 @@ class TestEntity(unittest.TestCase):
         self.assertEqual(self.entity.file, "/path/to/file.cpp")
         self.assertEqual(self.entity.line, 10)
         self.assertEqual(self.entity.column, 5)
+        self.assertEqual(self.entity.end_line, 10)
+        self.assertEqual(self.entity.end_column, 15)
         self.assertEqual(self.entity.doc_comment, "Test documentation")
         self.assertEqual(self.entity.access, AccessSpecifier.PUBLIC)
         self.assertIsNone(self.entity.parent)
@@ -80,6 +82,8 @@ class TestEntity(unittest.TestCase):
         self.assertEqual(entity_dict["location"]["file"], "/path/to/file.cpp")
         self.assertEqual(entity_dict["location"]["line"], 10)
         self.assertEqual(entity_dict["location"]["column"], 5)
+        self.assertEqual(entity_dict["location"]["end_line"], 10)
+        self.assertEqual(entity_dict["location"]["end_column"], 15)
         self.assertEqual(entity_dict["doc_comment"], "Test documentation")
         self.assertEqual(entity_dict["access"], "PUBLIC")
         self.assertEqual(len(entity_dict["children"]), 1)
