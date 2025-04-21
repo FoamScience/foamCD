@@ -2183,6 +2183,154 @@ class EntityDatabase:
             logger.error(f"Error getting definition files: {e}")
             return []
     
+    def get_rts_base_classes(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all base classes that implement at least partial RunTimeSelection mechanism
+        
+        Args:
+            project_dir: Optional project directory to filter by
+            
+        Returns:
+            List of RTS base class information dictionaries with entry point data
+        """
+        logger.info(f"Looking for OpenFOAM RTS base classes with project_dir={project_dir}")
+        
+        # Check if OpenFOAM plugin is active by looking for any openfoam_rts fields
+        try:
+            self.cursor.execute("""
+            SELECT COUNT(*) FROM custom_entity_fields 
+            WHERE field_name LIKE 'openfoam_rts%'
+            """)
+            count = self.cursor.fetchone()[0]
+            if count == 0:
+                logger.info("No OpenFOAM RTS fields found in database, openfoam plugin might not be active")
+                return []
+        except sqlite3.Error as e:
+            logger.warning(f"Error checking for OpenFOAM plugin: {e}")
+            return []
+            
+        try:
+            rts_classes = []
+            self.cursor.execute("""
+            SELECT COUNT(*) FROM custom_entity_fields WHERE field_name = 'openfoam_rts_status'
+            """)
+            count = self.cursor.fetchone()[0]
+            logger.info(f"Found {count} entities with OpenFOAM RTS status")
+            self.cursor.execute("""
+            SELECT e.uuid, e.name, e.file, e.line, e.end_line, e.parent_uuid, cef.text_value
+            FROM entities e
+            JOIN custom_entity_fields cef ON e.uuid = cef.entity_uuid
+            WHERE cef.field_name = 'openfoam_rts_status'
+            AND (cef.text_value = 'partial' OR cef.text_value = 'complete')
+            AND e.kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+            """)
+            potential_rts_classes = {}
+            for row in self.cursor.fetchall():
+                class_uuid = row[0]
+                class_name = row[1]
+                file_path = row[2]
+                line = row[3]
+                end_line = row[4]
+                parent_uuid = row[5]
+                rts_status = row[6]
+                if project_dir and not self._is_entity_in_project(class_uuid, project_dir):
+                    continue
+                    
+                potential_rts_classes[class_uuid] = {
+                    "uuid": class_uuid,
+                    "name": class_name,
+                    "file": file_path,
+                    "line": line,
+                    "end_line": end_line,
+                    "parent_uuid": parent_uuid,
+                    "rts_status": rts_status
+                }
+            
+            self.cursor.execute("""
+            SELECT DISTINCT base_uuid 
+            FROM base_child_links
+            WHERE direct = TRUE
+            """)
+            
+            base_class_uuids = set(row[0] for row in self.cursor.fetchall())
+            logger.info(f"Found {len(base_class_uuids)} base classes in total")
+            
+            rts_base_classes = []
+            for uuid, class_info in potential_rts_classes.items():
+                self.cursor.execute("""
+                SELECT text_value 
+                FROM custom_entity_fields 
+                WHERE entity_uuid = ? AND field_name = 'openfoam_class_role'
+                """, (uuid,))
+                role_row = self.cursor.fetchone()
+                class_role = role_row[0] if role_row else 'unknown'
+                if class_role == 'base' or uuid in base_class_uuids:
+                    class_name = class_info["name"]
+                    namespace = self._get_namespace_path(class_info["parent_uuid"])
+                    self.cursor.execute("""
+                    SELECT text_value 
+                    FROM custom_entity_fields 
+                    WHERE entity_uuid = ? AND field_name = 'openfoam_rts_count'
+                    """, (uuid,))
+            
+                    count_row = self.cursor.fetchone()
+                    table_count = 1  # Default to 1 if not specified
+                    if count_row and count_row[0] is not None:
+                        table_count = int(count_row[0])
+                    self.cursor.execute("""
+                    SELECT text_value 
+                    FROM custom_entity_fields 
+                    WHERE entity_uuid = ? AND field_name = 'openfoam_rts_names'
+                    """, (uuid,))
+                    names_row = self.cursor.fetchone()
+                    rts_table_names = names_row[0].split('|') if names_row and names_row[0] else []
+                    self.cursor.execute("""
+                    SELECT text_value 
+                    FROM custom_entity_fields 
+                    WHERE entity_uuid = ? AND field_name = 'openfoam_rts_types'
+                    """, (uuid,))
+                    types_row = self.cursor.fetchone()
+                    rts_types = types_row[0].split('|') if types_row and types_row[0] else []
+                    self.cursor.execute("""
+                    SELECT text_value 
+                    FROM custom_entity_fields 
+                    WHERE entity_uuid = ? AND field_name = 'openfoam_rts_constructor_params'
+                    """, (uuid,))
+                    params_row = self.cursor.fetchone()
+                    constructor_params = params_row[0].split('|') if params_row and params_row[0] else []
+                    self.cursor.execute("""
+                    SELECT text_value 
+                    FROM custom_entity_fields 
+                    WHERE entity_uuid = ? AND field_name = 'openfoam_rts_selector_params'
+                    """, (uuid,))
+                    selector_row = self.cursor.fetchone()
+                    selector_params = selector_row[0].split('|') if selector_row and selector_row[0] else []
+                    entry_point = {
+                        "name": class_name,
+                        "namespace": namespace,
+                        "declaration_file": class_info['file'],
+                        "line": class_info['line'],
+                        "end_line": class_info['end_line'] if class_info['end_line'] else class_info['line'],
+                        "rts_status": class_info["rts_status"],
+                        "class_role": class_role,
+                        "table_count": table_count,
+                        "rts_names": rts_table_names
+                    }
+                    if rts_types:
+                        entry_point["rts_types"] = rts_types
+                    def_files = self._get_definition_files(uuid)
+                    if def_files:
+                        entry_point["definition_files"] = def_files
+                    
+                    rts_base_classes.append(entry_point)
+            rts_base_classes.sort(key=lambda x: x["name"])
+            logger.info(f"Found {len(rts_base_classes)} RTS base classes after filtering")
+            return rts_base_classes
+            
+        except sqlite3.Error as e:
+            logger.error(f"Error getting RTS base classes: {e}")
+            raise
+            return []
+    
     def get_namespace_stats(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get statistics about namespaces in the codebase
         
