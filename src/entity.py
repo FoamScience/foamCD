@@ -18,6 +18,7 @@ class Entity:
         self.access = AccessSpecifier.PUBLIC
         self.linkage = None
         self.type_info = None
+        self.full_signature = None
         self.cpp_features: Set[str] = set()
         
         # Inheritance tracking
@@ -170,6 +171,7 @@ class Entity:
             'parsed_doc': self.parsed_doc,
             'access': self.access.name if self.access else None,
             'type_info': self.type_info,
+            'full_signature': self.full_signature,
             'cpp_features': list(self.cpp_features),
             'is_external_reference': self.is_external_reference,
         }

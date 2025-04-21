@@ -341,10 +341,43 @@ class ClangParser:
         entity.linkage = cursor.linkage
         if cursor.type and cursor.type.spelling:
             entity.type_info = cursor.type.spelling
-        # Pass entity to feature detection to allow plugins to add custom fields
+            
+        if cursor.kind in [
+            clang.cindex.CursorKind.FUNCTION_DECL,
+            clang.cindex.CursorKind.FUNCTION_TEMPLATE,
+            clang.cindex.CursorKind.CXX_METHOD,
+            clang.cindex.CursorKind.CONSTRUCTOR,
+            clang.cindex.CursorKind.DESTRUCTOR,
+            clang.cindex.CursorKind.CONCEPT_DECL
+        ]:
+            tokens = list(cursor.get_tokens())
+            if tokens:
+                start_offset = cursor.extent.start.offset
+                end_offset = cursor.extent.end.offset
+                try:
+                    with open(cursor.location.file.name, 'r') as f:
+                        content = f.read()
+                        if start_offset < len(content) and end_offset <= len(content):
+                            full_decl = content[start_offset:end_offset]
+                            body_start = full_decl.find('{')
+                            if body_start > 0:
+                                full_decl = full_decl[:body_start].strip()
+                            full_decl = full_decl.rstrip(';').strip()
+                            entity.full_signature = full_decl
+                            logger.debug(f"Extracted full signature: {full_decl}")
+                except Exception as e:
+                    logger.debug(f"Error extracting full signature: {e}")
+                    try:
+                        full_text = ' '.join(t.spelling for t in tokens)
+                        body_start = full_text.find('{')
+                        if body_start > 0:
+                            full_text = full_text[:body_start].strip()
+                        full_text = full_text.rstrip(';').strip()
+                        entity.full_signature = full_text
+                    except Exception as e2:
+                        logger.debug(f"Fallback signature extraction failed: {e2}")
+                        
         entity.cpp_features = self.detect_cpp_features(cursor, entity)
-        
-        # Process method/class-specific attributes
         self._process_method_classification(entity, cursor)
         self._process_class_features(entity, cursor)
         

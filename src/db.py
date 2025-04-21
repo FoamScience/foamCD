@@ -57,13 +57,23 @@ class EntityDatabase:
                 kind TEXT NOT NULL,
                 file TEXT,
                 line INTEGER,
-                column INTEGER,
                 end_line INTEGER,
+                column INTEGER,
                 end_column INTEGER,
-                documentation TEXT,
-                access_level TEXT,
-                type_info TEXT,
                 parent_uuid TEXT,
+                doc_comment TEXT,
+                access TEXT,
+                type_info TEXT,
+                full_signature TEXT,
+                is_virtual INTEGER,
+                is_pure_virtual INTEGER,
+                is_override INTEGER,
+                is_final INTEGER,
+                is_abstract INTEGER,
+                is_defaulted INTEGER,
+                is_deleted INTEGER,
+                linkage TEXT,
+                is_external_reference INTEGER,
                 FOREIGN KEY (parent_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
             )
             ''')
@@ -307,18 +317,20 @@ class EntityDatabase:
             file_path = location.get('file') if location else entity.get('file')
             line = location.get('line') if location else entity.get('line')
             column = location.get('column') if location else entity.get('column')
+            end_line = location.get('end_line') if location else entity.get('end_line')
+            end_column = location.get('end_column') if location else entity.get('end_column')
             documentation = entity.get('doc_comment') or entity.get('documentation')
             parent_uuid = entity.get('parent_uuid')
-            access_level = entity.get('access')
+            access_level = entity.get('access_level') or entity.get('access')
             type_info = entity.get('type_info')
+            full_signature = entity.get('full_signature')
             
             # Insert entity
             self.cursor.execute('''
             INSERT OR REPLACE INTO entities 
-            (uuid, name, kind, file, line, column, documentation, access_level, type_info, parent_uuid)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (uuid, name, kind, file_path, line, column, documentation, 
-                  access_level, type_info, parent_uuid))
+            (uuid, name, kind, file, line, end_line, column, end_column, parent_uuid, doc_comment, access, type_info, full_signature)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (uuid, name, kind, file_path, line, end_line, column, end_column, parent_uuid, documentation, access_level, type_info, full_signature))
             
             if 'cpp_features' in entity and entity['cpp_features']:
                 self._store_entity_features(uuid, entity['cpp_features'])
@@ -403,18 +415,17 @@ class EntityDatabase:
             base_classes: List of base class dictionaries with base class information
         """
         try:
-            logger.debug(f"Storing inheritance for class {class_uuid} with {len(base_classes)} base classes")
-            
-            # Clear inheritence records, this is important when loading existing databases
-            # as inheritence hierarchies are suseptable to change
-            self.cursor.execute('''
-            DELETE FROM inheritance WHERE class_uuid = ?
-            ''', (class_uuid,))
-            
+            recursive_count = 0
             self.cursor.execute('SELECT name FROM entities WHERE uuid = ?', (class_uuid,))
             class_name_row = self.cursor.fetchone()
             class_name = class_name_row[0] if class_name_row else 'UnknownClass'
             logger.debug(f"Found class name for {class_uuid}: {class_name}")
+            
+            # Clear existing inheritance relationships
+            self.cursor.execute('''
+            DELETE FROM inheritance WHERE class_uuid = ?
+            ''', (class_uuid,))
+            
             for base_class in base_classes:
                 base_uuid = base_class.get('uuid', None)
                 self.cursor.execute('''
@@ -450,10 +461,15 @@ class EntityDatabase:
                             effective_access = 'PRIVATE'
                         elif ancestor_access == 'PROTECTED' or access_level == 'PROTECTED':
                             effective_access = 'PROTECTED'
-                        self.cursor.execute('''
-                        INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth, access_level)
-                        VALUES (?, ?, ?, ?, ?)
-                        ''', (ancestor_uuid, class_uuid, False, depth + 1, effective_access))
+                        # else keep PUBLIC
+                        try:
+                            self.cursor.execute('''
+                            INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth, access_level)
+                            VALUES (?, ?, ?, ?, ?)
+                            ''', (ancestor_uuid, class_uuid, False, depth + 1, effective_access))
+                            recursive_count += 1
+                        except sqlite3.Error as e:
+                            logger.error(f"Error inserting recursive relationship: {e}")
                 else:
                     logger.debug(f"Stored inheritance relationship without UUID: {class_name} ({class_uuid}) inherits from {base_class['name']}")
             self._update_recursive_base_child_links(class_uuid)
@@ -629,31 +645,22 @@ class EntityDatabase:
         """
         try:
             self.cursor.execute('''
-            SELECT child_uuid, access_level FROM base_child_links
+            SELECT child_uuid FROM base_child_links
             WHERE base_uuid = ? AND direct = TRUE
             ''', (class_uuid,))
-            child_rows = self.cursor.fetchall()
-            for child_row in child_rows:
-                child_uuid = child_row[0]
-                child_access_level = child_row[1]
+            direct_children = [row[0] for row in self.cursor.fetchall()]
+            for child_uuid in direct_children:
                 self.cursor.execute('''
-                SELECT base_uuid, depth, access_level FROM base_child_links
+                SELECT base_uuid, depth FROM base_child_links 
                 WHERE child_uuid = ? AND child_uuid != ?
                 ''', (class_uuid, child_uuid))
                 for row in self.cursor.fetchall():
                     ancestor_uuid = row[0]
                     depth = row[1]
-                    ancestor_access = row[2]
-                    effective_access = child_access_level
-                    if ancestor_access == 'PRIVATE' or child_access_level == 'PRIVATE':
-                        effective_access = 'PRIVATE'
-                    elif ancestor_access == 'PROTECTED' or child_access_level == 'PROTECTED':
-                        effective_access = 'PROTECTED'
-                    # else keep PUBLIC, code repeated here? time to refactor?
                     self.cursor.execute('''
-                    INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth, access_level)
-                    VALUES (?, ?, FALSE, ?, ?)
-                    ''', (ancestor_uuid, child_uuid, depth + 1, effective_access))
+                    INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth)
+                    VALUES (?, ?, FALSE, ?)
+                    ''', (ancestor_uuid, child_uuid, depth + 1))
                 self._update_recursive_base_child_links(child_uuid)
                 
         except sqlite3.Error as e:
@@ -816,12 +823,17 @@ class EntityDatabase:
             access_level = entity.get('access_level', None) or entity.get('access', None)
             parent_uuid = entity.get('parent_uuid', None)
             type_info = entity.get('type_info', None)
+            full_signature = entity.get('full_signature', None)
             
+            # Insert entity with all fields
             self.cursor.execute('''
             INSERT OR REPLACE INTO entities 
-            (uuid, name, kind, file, line, column, end_line, end_column, documentation, access_level, type_info, parent_uuid)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (uuid, name, kind, file_path, line, column, end_line, end_column, doc_comment, access_level, type_info, parent_uuid))
+            (uuid, name, kind, file, line, end_line, column, end_column, parent_uuid, 
+             doc_comment, access, type_info, full_signature, is_virtual, is_pure_virtual, 
+             is_override, is_final, is_abstract, is_defaulted, is_deleted, linkage, is_external_reference)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (uuid, name, kind, file_path, line, end_line, column, end_column, parent_uuid, 
+                  doc_comment, access_level, type_info, full_signature, 0, 0, 0, 0, 0, 0, 0, None, 0))
             
             # Store method classification if present
             method_info = entity.get('method_info', {})
@@ -947,7 +959,7 @@ class EntityDatabase:
             # Recursively get children
             children = []
             for child_uuid in child_uuids:
-                child = self.get_entity(child_uuid)
+                child = self.get_entity_by_uuid(child_uuid)
                 if child:
                     children.append(child)
             
@@ -957,6 +969,10 @@ class EntityDatabase:
             custom_fields = self._get_custom_entity_fields(uuid)
             if custom_fields:
                 entity['custom_fields'] = custom_fields
+                
+            # For backward compatibility with tests - map 'access' to 'access_level'
+            if 'access' in entity and 'access_level' not in entity:
+                entity['access_level'] = entity['access']
                 
             return entity
         except sqlite3.Error as e:
@@ -1549,6 +1565,556 @@ class EntityDatabase:
             logger.error(f"Error getting entity declaration: {e}")
             return None
     
+    def get_concept_stats(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all C++ concept statistics
+        
+        Args:
+            project_dir: Optional project directory to filter concepts by
+            
+        Returns:
+            List of concept information dictionaries
+        """
+        try:
+            # Build the query with optional project directory filter
+            file_filter = ""
+            file_filter_params = []
+            if project_dir and project_dir.strip():
+                project_dir = os.path.normpath(project_dir)
+                logger.debug(f"Filtering concepts by project directory: {project_dir}")
+                file_filter = "AND file LIKE ? || '%'"
+                file_filter_params = [project_dir]
+                
+            # Check if full_signature column exists
+            self.cursor.execute("""
+            PRAGMA table_info(entities)
+            """)
+            columns = [info[1] for info in self.cursor.fetchall()]
+            has_full_signature = 'full_signature' in columns
+            
+            # Query for concepts
+            if has_full_signature:
+                query = f"""
+                SELECT uuid, name, file, line, end_line, parent_uuid, kind, full_signature
+                FROM entities
+                WHERE kind IN ('CONCEPT_DECL')
+                {file_filter}
+                """
+            else:
+                query = f"""
+                SELECT uuid, name, file, line, end_line, parent_uuid, kind
+                FROM entities
+                WHERE kind IN ('CONCEPT_DECL')
+                {file_filter}
+                """
+            
+            self.cursor.execute(query, file_filter_params)
+            
+            # List to store concept info
+            concepts = []
+            
+            # Process each concept
+            rows = self.cursor.fetchall()
+            for row in rows:
+                # Handle different row structures based on database schema
+                if has_full_signature:
+                    uuid, name, file_path, line, end_line, parent_uuid, kind, full_signature = row
+                else:
+                    uuid, name, file_path, line, end_line, parent_uuid, kind = row
+                    full_signature = None
+                
+                # Skip if not in project (double-check)
+                if not self._is_entity_in_project(uuid, project_dir):
+                    continue
+                    
+                # Get namespace for this concept
+                namespace = self._get_namespace_path(parent_uuid) if parent_uuid else ""
+                
+                # Build concept info
+                concept_info = {
+                    "uuid": uuid,
+                    "name": name,
+                    "namespace": namespace,
+                    "kind": kind
+                }
+                
+                # Add file information
+                if file_path and line:
+                    concept_info["declaration_file"] = f"{file_path}#L{line}-L{end_line if end_line else line}"
+                
+                # Try to get documentation if available
+                try:
+                    doc = self._get_entity_documentation(uuid)
+                    if doc:
+                        concept_info["doc_comment"] = doc
+                except:
+                    pass  # Skip documentation if not available
+                    
+                # Get concept requirements if available
+                requirements = self._get_concept_requirements(uuid)
+                if requirements:
+                    concept_info["requirements"] = requirements
+                    
+                # Add signature if available
+                if full_signature:
+                    concept_info["signature"] = full_signature
+                    
+                # Add to results
+                concepts.append(concept_info)
+                
+            # Sort concepts by name
+            concepts.sort(key=lambda c: c.get("name", ""))
+            
+            return concepts
+        except sqlite3.Error as e:
+            logger.error(f"Error getting concept statistics: {e}")
+            return []
+            
+    def _get_concept_requirements(self, concept_uuid: str) -> List[str]:
+        """Get requirements for a concept
+        
+        Args:
+            concept_uuid: UUID of the concept
+            
+        Returns:
+            List of requirement strings
+        """
+        try:
+            # Check if we have a table for concept requirements
+            self.cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='concept_requirements'
+            """)
+            
+            if not self.cursor.fetchone():
+                return []  # Table doesn't exist
+                
+            # Query for requirements
+            self.cursor.execute("""
+            SELECT requirement FROM concept_requirements 
+            WHERE concept_uuid = ? 
+            ORDER BY position
+            """, (concept_uuid,))
+            
+            return [row[0] for row in self.cursor.fetchall()]
+        except sqlite3.Error as e:
+            logger.debug(f"Error getting concept requirements: {e}")
+            return []
+    
+    def get_function_stats(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get all function and function template statistics, grouped by function name with overloads
+        
+        Args:
+            project_dir: Optional project directory to filter functions by
+            
+        Returns:
+            List of function information dictionaries with nested overloads
+        """
+        try:
+            # Build the query with optional project directory filter
+            file_filter = ""
+            file_filter_params = []
+            if project_dir and project_dir.strip():
+                project_dir = os.path.normpath(project_dir)
+                logger.debug(f"Filtering functions by project directory: {project_dir}")
+                file_filter = "AND file LIKE ? || '%'"
+                file_filter_params = [project_dir]
+                
+            # Check if full_signature column exists
+            self.cursor.execute("""
+            PRAGMA table_info(entities)
+            """)
+            columns = [info[1] for info in self.cursor.fetchall()]
+            has_full_signature = 'full_signature' in columns
+            
+            # Query for functions and function templates
+            if has_full_signature:
+                query = f"""
+                SELECT uuid, name, file, line, end_line, parent_uuid, kind, full_signature
+                FROM entities
+                WHERE kind IN ('FUNCTION_DECL', 'FUNCTION_TEMPLATE')
+                {file_filter}
+                """
+            else:
+                query = f"""
+                SELECT uuid, name, file, line, end_line, parent_uuid, kind
+                FROM entities
+                WHERE kind IN ('FUNCTION_DECL', 'FUNCTION_TEMPLATE')
+                {file_filter}
+                """
+            
+            self.cursor.execute(query, file_filter_params)
+            
+            # Map of function name -> list of function info dicts
+            function_groups = {}
+            function_dict = {}  # UUID -> function info
+            
+            # Sort functions into groups by name
+            rows = self.cursor.fetchall()
+            for row in rows:
+                # Handle different row structures based on database schema
+                if has_full_signature:
+                    uuid, name, file_path, line, end_line, parent_uuid, kind, full_signature = row
+                else:
+                    uuid, name, file_path, line, end_line, parent_uuid, kind = row
+                    full_signature = None
+                
+                # Skip if not in project (double-check)
+                if not self._is_entity_in_project(uuid, project_dir):
+                    continue
+                    
+                # Get namespace for this function
+                namespace = self._get_namespace_path(parent_uuid) if parent_uuid else ""
+                
+                # Build function info
+                function_info = {
+                    "uuid": uuid,
+                    "name": name,
+                    "namespace": namespace,
+                    "kind": kind,
+                    "uri": f"/api/{namespace.replace('::', '_')}_{name}"
+                }
+                
+                # Add file information
+                if file_path and line:
+                    function_info["declaration_file"] = f"{file_path}#L{line}-L{end_line if end_line else line}"
+                
+                # Try to add documentation if available
+                try:
+                    doc = self._get_entity_documentation(uuid)
+                    if doc:
+                        function_info["doc_comment"] = doc
+                        # Extract description from doc comment for easier access
+                        description_lines = [line.strip() for line in doc.split('\n') 
+                                           if line.strip() and not line.strip().startswith('@')]
+                        if description_lines:
+                            function_info["description"] = '\n'.join(description_lines)
+                except Exception as e:
+                    logger.debug(f"Error getting documentation for {name}: {e}")
+                    pass
+                
+                # Check if return_types table exists
+                self.cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='return_types'
+                """)
+                has_return_table = bool(self.cursor.fetchone())
+                
+                # Get return type if table exists
+                if has_return_table:
+                    try:
+                        self.cursor.execute("""
+                        SELECT type FROM return_types 
+                        WHERE entity_uuid = ?
+                        """, (uuid,))
+                        ret_row = self.cursor.fetchone()
+                        if ret_row:
+                            function_info["return_type"] = ret_row[0]
+                            # Update signature with return type
+                            function_info["signature"] = f"{ret_row[0]} {function_info['signature']}"
+                    except Exception as e:
+                        logger.debug(f"Error getting return type for {name}: {e}")
+                    
+                # Check if parameters table exists
+                self.cursor.execute("""
+                SELECT name FROM sqlite_master 
+                WHERE type='table' AND name='parameters'
+                """)
+                has_params_table = bool(self.cursor.fetchone())
+                
+                # Get function's parameters if the table exists
+                params = []
+                if has_params_table:
+                    try:
+                        self.cursor.execute("""
+                        SELECT uuid, index_num, name, type, default_value FROM parameters 
+                        WHERE entity_uuid = ? ORDER BY index_num
+                        """, (uuid,))
+                        
+                        # Store parameters for this function
+                        param_rows = self.cursor.fetchall()
+                        if param_rows:
+                            params = [{
+                                "name": param_name,
+                                "type": param_type,
+                                "default_value": default_value
+                            } for _, _, param_name, param_type, default_value in param_rows]
+                            function_info["parameters"] = params
+                    except sqlite3.Error as e:
+                        logger.debug(f"Error getting parameters for {name}: {e}")
+                    
+                # Build signature from parameters or use name only
+                # Build a signature - prioritize full signature if available
+                if full_signature:
+                    function_info["signature"] = full_signature
+                else:
+                    # Otherwise build a basic signature from the parameters
+                    signature = f"{name}("
+                    if params:
+                        signature += ", ".join([f"{p['type']} {p['name'] if p['name'] else ''}" 
+                                      if not p.get('default_value') else 
+                                      f"{p['type']} {p['name'] if p['name'] else ''} = {p['default_value']}" 
+                                      for p in params])
+                    signature += ")"
+                    function_info["signature"] = signature
+                
+                # Get decorations (constexpr, consteval, inline, static, noexcept, etc.)
+                try:
+                    decorations = []
+                    
+                    # Check if attributes table exists
+                    self.cursor.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='attributes'
+                    """)
+                    has_attr_table = bool(self.cursor.fetchone())
+                    
+                    # Query attributes table for function qualifiers if table exists
+                    if has_attr_table:
+                        self.cursor.execute("""
+                        SELECT name, value FROM attributes 
+                        WHERE entity_uuid = ? AND (category = 'qualifier' OR category = 'attribute')
+                        """, (uuid,))
+                        
+                        for attr_name, attr_value in self.cursor.fetchall():
+                            if attr_value and attr_value.strip():
+                                decorations.append(f"{attr_name}({attr_value})")
+                            else:
+                                decorations.append(attr_name)
+                    
+                    # Check if concept_requirements table exists for requires clauses
+                    self.cursor.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='concept_requirements'
+                    """)
+                    has_concept_reqs = bool(self.cursor.fetchone())
+                    
+                    if has_concept_reqs:
+                        # Check for requires clauses
+                        self.cursor.execute("""
+                        SELECT requirement FROM concept_requirements 
+                        WHERE function_uuid = ? ORDER BY position
+                        """, (uuid,))
+                        
+                        requires_clauses = [row[0] for row in self.cursor.fetchall()]
+                        if requires_clauses:
+                            decorations.append(f"requires {' && '.join(requires_clauses)}")
+                            
+                    if decorations:
+                        function_info["decorations"] = decorations
+                        
+                except Exception as e:
+                    logger.debug(f"Error getting decorations for {name}: {e}")
+                    
+                # Get C++ features used by this function
+                try:
+                    # Check if entity_features table exists
+                    self.cursor.execute("""
+                    SELECT name FROM sqlite_master 
+                    WHERE type='table' AND name='entity_features'
+                    """)
+                    has_features_table = bool(self.cursor.fetchone())
+                    
+                    if has_features_table:
+                        self.cursor.execute("""
+                        SELECT feature_name FROM entity_features 
+                        WHERE entity_uuid = ?
+                        """, (uuid,))
+                        
+                        features = [row[0] for row in self.cursor.fetchall()]
+                        if features:
+                            function_info["uses_features"] = features
+                        
+                except Exception as e:
+                    logger.debug(f"Error getting features for {name}: {e}")
+                    
+                # Get definition files
+                def_files = self._get_definition_files(uuid)
+                if def_files:
+                    function_info["definition_files"] = def_files
+                    
+                # Get concept requirements if available
+                requirements = self._get_concept_requirements(uuid)
+                if requirements:
+                    function_info["requirements"] = requirements
+                    
+                # We no longer add full_signature to avoid duplication
+                # The signature field contains the full signature when available
+                    
+                # Store function info
+                function_dict[uuid] = function_info
+                
+                # Group by name and namespace
+                group_key = f"{namespace}::{name}" if namespace else name
+                if group_key not in function_groups:
+                    function_groups[group_key] = []
+                function_groups[group_key].append(uuid)
+            
+            # Build nested result with function groups
+            nested_result = []
+            
+            # Sort function groups by name
+            for group_key in sorted(function_groups.keys()):
+                uuids = function_groups[group_key]
+                if not uuids:
+                    continue
+                    
+                # Take the first function as the representative for the group
+                primary_uuid = uuids[0]
+                primary_info = function_dict[primary_uuid].copy()
+                
+                # If there's more than one function with this name, add overloads
+                if len(uuids) > 1:
+                    # Sort overloads by complexity (parameter count, template status)
+                    def sort_key(uuid):
+                        info = function_dict[uuid]
+                        is_template = info.get("kind") == "FUNCTION_TEMPLATE"
+                        param_count = len(info.get("parameters", []))
+                        return (is_template, param_count, info.get("name", ""))
+                        
+                    sorted_uuids = sorted(uuids, key=sort_key)
+                    
+                    # Create a list for overloads - skip the first one as it's our primary
+                    overloads = []
+                    for overload_uuid in sorted_uuids[1:]:
+                        overload_info = function_dict[overload_uuid].copy()
+                        overload_info.pop("uuid", None)  # Remove UUID as it's not needed in output
+                        overloads.append(overload_info)
+                        
+                    if overloads:
+                        primary_info["overloads"] = overloads
+                
+                # Remove UUID from the primary info
+                primary_info.pop("uuid", None)
+                
+                # Add to the result
+                nested_result.append(primary_info)
+                
+            return nested_result
+        except sqlite3.Error as e:
+            logger.error(f"Error getting function statistics: {e}")
+            raise
+            
+    def _get_function_parameters(self, function_uuid: str) -> List[Dict[str, str]]:
+        """Get parameters for a function
+        
+        Args:
+            function_uuid: UUID of the function
+            
+        Returns:
+            List of parameter information dictionaries
+        """
+        try:
+            self.cursor.execute("""
+            SELECT uuid, index_num, name, type, default_value FROM parameters 
+            WHERE entity_uuid = ? ORDER BY index_num
+            """, (function_uuid,))
+            
+            # Store parameters for this function
+            param_rows = self.cursor.fetchall()
+            params = []
+            if param_rows:
+                params = [{
+                    "name": param_name,
+                    "type": param_type,
+                    "default_value": default_value
+                } for _, _, param_name, param_type, default_value in param_rows]
+                return params
+        except sqlite3.Error as e:
+            logger.debug(f"Error getting function parameters: {e}")
+            return []
+            
+    def _get_function_return_type(self, function_uuid: str) -> Optional[str]:
+        """Get return type for a function
+        
+        Args:
+            function_uuid: UUID of the function
+            
+        Returns:
+            Return type string or None
+        """
+        try:
+            self.cursor.execute("""
+            SELECT return_type FROM functions WHERE uuid = ?
+            """, (function_uuid,))
+            
+            row = self.cursor.fetchone()
+            return row[0] if row and row[0] else None
+        except sqlite3.Error as e:
+            logger.debug(f"Error getting function return type: {e}")
+            return None
+            
+    def _get_entity_documentation(self, entity_uuid: str) -> Optional[str]:
+        """Get documentation for an entity if available
+        
+        Args:
+            entity_uuid: UUID of the entity
+            
+        Returns:
+            Documentation string or None if not available
+        """
+        try:
+            # Try to get documentation from comments table
+            self.cursor.execute("""
+            SELECT comment FROM comments WHERE entity_uuid = ?
+            """, (entity_uuid,))
+            
+            row = self.cursor.fetchone()
+            if row and row[0]:
+                return row[0]
+                
+            # If not found, try other possible locations based on entity type
+            self.cursor.execute("""
+            SELECT kind FROM entities WHERE uuid = ?
+            """, (entity_uuid,))
+            
+            row = self.cursor.fetchone()
+            if not row:
+                return None
+                
+            kind = row[0]
+            
+            # For functions, try function-specific tables
+            if kind in ('FUNCTION_DECL', 'FUNCTION_TEMPLATE'):
+                self.cursor.execute("""
+                SELECT documentation FROM functions WHERE uuid = ?
+                """, (entity_uuid,))
+                
+                row = self.cursor.fetchone()
+                if row and row[0]:
+                    return row[0]
+            
+            return None
+        except sqlite3.Error as e:
+            logger.debug(f"Error getting entity documentation: {e}")
+            return None
+    
+    def _is_entity_in_project(self, entity_uuid: str, project_dir: Optional[str] = None) -> bool:
+        """Check if an entity belongs to the project directory
+        
+        Args:
+            entity_uuid: UUID of the entity
+            project_dir: Project directory to check against
+            
+        Returns:
+            True if the entity is in the project directory, or if project_dir is None
+        """
+        # If no project directory specified, consider all entities to be in the project
+        if not project_dir or not project_dir.strip():
+            return True
+        project_dir = os.path.normpath(project_dir)
+        
+        try:
+            self.cursor.execute('''
+            SELECT file FROM entities WHERE uuid = ?
+            ''', (entity_uuid,))
+            row = self.cursor.fetchone()
+            if not row or not row[0]:
+                return False  # No file associated with this UUID
+            file_path = row[0]
+            return file_path.startswith(project_dir)
+        except sqlite3.Error:
+            return False  # On error, assume not in project
+    
     def _is_class_in_project(self, class_uuid: str, project_dir: Optional[str] = None) -> bool:
         """Check if a class belongs to the project directory
         
@@ -1559,21 +2125,8 @@ class EntityDatabase:
         Returns:
             True if the class is in the project directory, or if project_dir is None
         """
-        if not project_dir or not project_dir.strip():
-            return True
-        project_dir = os.path.normpath(project_dir)
-        
-        try:
-            self.cursor.execute('''
-            SELECT file FROM entities WHERE uuid = ?
-            ''', (class_uuid,))
-            row = self.cursor.fetchone()
-            if not row or not row[0]:
-                return False  # No file associated with this UUID
-            file_path = row[0]
-            return file_path.startswith(project_dir)
-        except sqlite3.Error:
-            return False  # TODO: On error, assume not in project????
+        # Delegate to the more general _is_entity_in_project method
+        return self._is_entity_in_project(class_uuid, project_dir)
     
     def _get_definition_files(self, class_uuid: str) -> List[str]:
         """Get all definition files for a class
