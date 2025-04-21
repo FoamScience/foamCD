@@ -6,7 +6,7 @@ from typing import List, Dict, Any, Optional
 
 from logs import setup_logging
 
-from parse import CPP_IMPLEM_EXTENSIONS, CPP_HEADER_EXTENSIONS
+from common import CPP_IMPLEM_EXTENSIONS, CPP_HEADER_EXTENSIONS
 
 logger = setup_logging()
 

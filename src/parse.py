@@ -16,9 +16,7 @@ from plugin_system import PluginManager
 
 logger = setup_logging()
 
-CPP_HEADER_EXTENSIONS = ['.hpp', '.hxx', '.h++', '.hh', '.H']
-CPP_IMPLEM_EXTENSIONS = ['.cpp', '.cxx', '.c++', '.cc', '.C']
-CPP_FILE_EXTENSIONS = [*CPP_HEADER_EXTENSIONS, *CPP_IMPLEM_EXTENSIONS]
+from common import CPP_HEADER_EXTENSIONS, CPP_IMPLEM_EXTENSIONS, CPP_FILE_EXTENSIONS
 
 def configure_libclang(libclang_path: Optional[str] = None):
     """Configure libclang library path if necessary
