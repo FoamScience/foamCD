@@ -301,35 +301,54 @@ class TestInheritanceTracking(unittest.TestCase):
         else:
             logger.info("No recursive inheritance relationships found (may be expected if no multi-level inheritance exists)")
         
+    def _extract_class_names_from_nested(self, nested_class_stats):
+        """Extract class names from nested class stats
+        
+        Args:
+            nested_class_stats: List of class info dictionaries with nested children
+            
+        Returns:
+            Tuple of (all_class_names, hierarchy_groups)
+        """
+        all_class_names = []
+        hierarchy_groups = []
+        
+        def process_class_node(node, current_group):
+            """Process a class node and its children recursively"""
+            name = node.get("name")
+            if name:
+                all_class_names.append(name)
+                current_group.append(name)
+                
+            # Process children if present
+            children = node.get("children", [])
+            for child in children:
+                process_class_node(child, current_group)
+        
+        # Process each top-level class and its hierarchy
+        for class_node in nested_class_stats:
+            # Start a new hierarchy group
+            current_group = []
+            process_class_node(class_node, current_group)
+            
+            # Add the group if it has any classes
+            if current_group:
+                hierarchy_groups.append(current_group)
+        
+        return all_class_names, hierarchy_groups
+    
     def test_class_stats_with_inheritance(self):
         """Test that class stats properly groups classes by inheritance hierarchy"""
         if SKIP_LIBCLANG_TESTS:
             self.skipTest("libclang is not properly configured")
             
         # Get class stats
-        class_stats = self.db.get_class_stats()
-        self.assertIsNotNone(class_stats, "Should get class stats result")
-        logger.info(f"Got {len(class_stats)} class stats entries")
+        nested_class_stats = self.db.get_class_stats()
+        self.assertIsNotNone(nested_class_stats, "Should get class stats result")
+        logger.info(f"Got {len(nested_class_stats)} top-level class entries")
         
-        # Get class names in order from the stats
-        class_names = []
-        hierarchy_groups = []
-        current_group = []
-        
-        for entry in class_stats:
-            if entry.get("name") == "<<separator>>":
-                if current_group:
-                    hierarchy_groups.append(current_group)
-                    current_group = []
-            else:
-                name = entry.get("name")
-                if name:
-                    class_names.append(name)
-                    current_group.append(name)
-        
-        # Add the last group if it exists
-        if current_group:
-            hierarchy_groups.append(current_group)
+        # Extract class names and hierarchy groups from the nested structure
+        class_names, hierarchy_groups = self._extract_class_names_from_nested(nested_class_stats)
         
         # Log all class names for debugging
         logger.debug(f"Class names: {', '.join(class_names)}")

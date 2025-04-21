@@ -284,6 +284,13 @@ struct AggregateDerived : AggregateBase {
     int derived_value;
 };
 
+template<auto callable>
+struct NoInheritenceExecutor {
+    inline void operator()() {
+        callable();
+    };
+};
+
 void aggregate_initialization_example();
 
 // Nontype template parameters
