@@ -26,25 +26,35 @@ class OpenFOAMDetector(FeatureDetector):
             "description": "Status of RTS implementation: 'complete', 'partial', or 'none'"
         },
         "openfoam_rts_missing": {
-            "type": "JSON",
-            "description": "List of missing RTS components"
-        },
-        "openfoam_rts_type": {
             "type": "TEXT",
-            "description": "Type of pointer used in RTS (e.g., autoPtr, Ptr)"
+            "description": "Comma-separated list of missing RTS components"
         },
-        "openfoam_rts_name": {
+        "openfoam_rts_count": {
+            "type": "INTEGER",
+            "description": "Number of RTS tables defined in the class"
+        },
+        # Fields for all tables using pipe-delimited concatenation
+        "openfoam_rts_names": {
             "type": "TEXT",
-            "description": "Name of the RTS table"
+            "description": "Pipe-delimited list of all RTS table names"
+        },
+        "openfoam_rts_types": {
+            "type": "TEXT",
+            "description": "Pipe-delimited list of all RTS pointer types"
         },
         "openfoam_rts_constructor_params": {
             "type": "TEXT",
-            "description": "Constructor parameters for the RTS"
+            "description": "Pipe-delimited list of all RTS constructor parameters"
         },
         "openfoam_rts_selector_params": {
-            "type": "TEXT", 
-            "description": "Parameters used to select from the RTS"
+            "type": "TEXT",
+            "description": "Pipe-delimited list of all RTS selector parameters"
         },
+        "openfoam_class_role": {
+            "type": "TEXT",
+            "description": "Role of the class in the RTS hierarchy: 'base', 'derived', or 'unknown'"
+        },
+        # Other OpenFOAM fields
         "openfoam_type_name": {
             "type": "TEXT",
             "description": "The TypeName string used for the class"
@@ -70,14 +80,10 @@ class OpenFOAMDetector(FeatureDetector):
         """
         Detect OpenFOAM macros in class declarations, focusing on RTS mechanism
         """
-        # Only process class, struct, and template class declarations
         if cursor.kind not in [CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, CursorKind.CLASS_TEMPLATE]:
             return False
-            
-        # Quick check if any OpenFOAM-specific macros are present
         openfoam_keywords = [
             'declareRunTimeSelectionTable',
-            'defineTypeNameAndDebug',
             'TypeName',
             'ClassName',
             'addToRunTimeSelectionTable'
@@ -86,23 +92,28 @@ class OpenFOAMDetector(FeatureDetector):
         if not any(keyword in token_str for keyword in openfoam_keywords):
             return False
             
-        # Track components needed for complete RTS implementation
-        rts_components = {
-            'declareRunTimeSelectionTable': False,
-            'defineTypeNameAndDebug': False,
-            'typeName': False,  # Either through TypeName or ClassName
-            'addToRunTimeSelectionTable': False
-        }
+        is_base_class = 'declareRunTimeSelectionTable' in token_str
+        is_derived_class = 'addToRunTimeSelectionTable' in token_str
+        if is_base_class:
+            rts_components = {
+                'declareRunTimeSelectionTable': False,  # Must have this declaration
+                'typeName': False,  # Must have TypeName or ClassName
+            }
+        else:
+            rts_components = {
+                'typeName': False,  # Must have TypeName or ClassName
+                'addToRunTimeSelectionTable': False  # Must have this to register with parent
+            }
         
-        # Initialize result fields
         fields = {
             'openfoam_rts_status': 'none',
             'openfoam_rts_missing': []
         }
-        
-        # Detect declareRunTimeSelectionTable
         rts_tables = []
-        rts_pattern = r'declareRunTimeSelectionTable\s*\(\s*([^,]+),\s*([^,]+),\s*([^,)]+)(?:,\s*\(([^)]*)\))(?:,\s*\(([^)]*)\))'
+        # TODO: VERY scary regular expression. Maybe opt for tree-sitter here?
+        rts_pattern = r'declareRunTimeSelectionTable\s*\(\s*([^,]+),\s*([^,]+),\s*([^,)\s]+)\s*(?:,\s*\(([^)]*)\))?\s*(?:,\s*\(([^)]*)\))?\s*\)'
+        if is_base_class and 'declareRunTimeSelectionTable' in rts_components:
+            rts_components['declareRunTimeSelectionTable'] = 'declareRunTimeSelectionTable' in token_str
         
         for match in re.finditer(rts_pattern, token_str):
             rts_components['declareRunTimeSelectionTable'] = True
@@ -120,20 +131,18 @@ class OpenFOAMDetector(FeatureDetector):
                 "ctor_params": ctor_params
             })
         
-        # Store RTS table info if found
         if rts_tables:
-            primary_rts = rts_tables[0]
+            fields['openfoam_rts_count'] = len(rts_tables)
             fields.update({
-                'openfoam_rts_type': primary_rts['pointer_type'],
-                'openfoam_rts_name': primary_rts['rts_name'],
-                'openfoam_rts_constructor_params': primary_rts['ctor_decl_params'],
-                'openfoam_rts_selector_params': primary_rts['ctor_params']
+                'openfoam_rts_names': '|'.join(table['rts_name'] for table in rts_tables),
+                'openfoam_rts_types': '|'.join(table['pointer_type'] for table in rts_tables),
+                'openfoam_rts_constructor_params': '|'.join(table['ctor_decl_params'] for table in rts_tables),
+                'openfoam_rts_selector_params': '|'.join(table['ctor_params'] for table in rts_tables)
             })
+            fields['openfoam_rts_status'] = 'partial'
             
-        # Detect TypeName and ClassName
         typename_pattern = r'TypeName\s*\(\s*"([^"]*)"\s*\)'
         classname_pattern = r'ClassName\s*\(\s*"([^"]*)"\s*\)'
-        
         typename_match = re.search(typename_pattern, token_str)
         classname_match = re.search(classname_pattern, token_str)
         
@@ -144,27 +153,22 @@ class OpenFOAMDetector(FeatureDetector):
             if type_name:
                 fields['openfoam_type_name'] = type_name
         
-        # Detect defineTypeNameAndDebug
         type_debug_pattern = r'defineTypeNameAndDebug\s*\(\s*([^,]+),\s*(\d+)\s*\)'
         type_debug_match = re.search(type_debug_pattern, token_str)
-        
         if type_debug_match:
-            rts_components['defineTypeNameAndDebug'] = True
             class_name = type_debug_match.group(1).strip()
             debug_flag = int(type_debug_match.group(2))
-            
-            # Only update if not set by TypeName/ClassName
             if 'openfoam_type_name' not in fields:
                 fields['openfoam_type_name'] = class_name
-                
             fields['openfoam_debug_flag'] = debug_flag
         
-        # Detect addToRunTimeSelectionTable
+        # TODO: Another scary regular expression, should really parse properly
         add_pattern = r'addToRunTimeSelectionTable\s*\(\s*([^,]+),\s*([^,]+),\s*([^,)]+)'
         add_match = re.search(add_pattern, token_str)
         
         if add_match:
-            rts_components['addToRunTimeSelectionTable'] = True
+            if 'addToRunTimeSelectionTable' in rts_components:
+                rts_components['addToRunTimeSelectionTable'] = True
             parent_class = add_match.group(1).strip()
             class_name = add_match.group(2).strip()
             registration_name = add_match.group(3).strip()
@@ -177,10 +181,24 @@ class OpenFOAMDetector(FeatureDetector):
         missing_components = [comp for comp, present in rts_components.items() if not present]
         if not missing_components:
             fields['openfoam_rts_status'] = 'complete'
-        elif any(rts_components.values()):
+        else:
             fields['openfoam_rts_status'] = 'partial'
-            fields['openfoam_rts_missing'] = missing_components
-        if any(rts_components.values()):
+            fields['openfoam_rts_missing'] = ','.join(missing_components)
+            
+        if is_base_class and not is_derived_class:
+            if not rts_components.get('declareRunTimeSelectionTable', False):
+                return False
+        elif is_derived_class:
+            if not rts_components.get('addToRunTimeSelectionTable', False):
+                return False
+        class_name = cursor.spelling
+        if re.fullmatch(r'add.*ConstructorToTable', class_name):
+            return False
+            
+        if (is_base_class and rts_components.get('declareRunTimeSelectionTable', False)) or \
+           (is_derived_class and rts_components.get('addToRunTimeSelectionTable', False)) or \
+           any(rts_components.values()):
+            fields['openfoam_class_role'] = 'base' if is_base_class else 'derived' if is_derived_class else 'unknown'
             return {
                 'detected': True,
                 'fields': fields 
