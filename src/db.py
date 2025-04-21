@@ -183,13 +183,13 @@ class EntityDatabase:
             
             # Create indices for inheritance table
             self.cursor.execute('''
-            CREATE INDEX idx_inheritance_class_name ON inheritance (class_name)
+            CREATE INDEX IF NOT EXISTS idx_inheritance_class_name ON inheritance (class_name)
             ''')
             self.cursor.execute('''
-            CREATE INDEX idx_inheritance_base_name ON inheritance (base_name)
+            CREATE INDEX IF NOT EXISTS idx_inheritance_base_name ON inheritance (base_name)
             ''')
             self.cursor.execute('''
-            CREATE INDEX idx_inheritance_class_uuid ON inheritance (class_uuid)
+            CREATE INDEX IF NOT EXISTS idx_inheritance_class_uuid ON inheritance (class_uuid)
             ''')
             self.cursor.execute('''
             CREATE INDEX IF NOT EXISTS idx_inheritance_base_uuid ON inheritance (base_uuid)
@@ -1265,6 +1265,8 @@ class EntityDatabase:
             
     def get_class_stats(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get detailed information about classes in the codebase
+
+        TODO: May be inefficient. Probably needs some refactoring...
         
         Args:
             project_dir: Optional project directory to filter by (only include classes from files in this dir)
@@ -1330,14 +1332,11 @@ class EntityDatabase:
                     result = []
                     root_uuids.sort(key=lambda uuid: class_dict.get(uuid, {}).get("name", ""))
                     
-                    for i, root_uuid in enumerate(root_uuids):
-                        if i > 0:
-                            result.append({"name": "<<separator>>"})
-                            
+                    for root_uuid in root_uuids:
                         if root_uuid in class_dict:
                             root_info = class_dict[root_uuid].copy()
                             root_info.pop("uuid", None)
-                            result.append(root_info)
+                            children = []
                             query = f"""
                             SELECT e.uuid 
                             FROM entities e
@@ -1353,8 +1352,89 @@ class EntityDatabase:
                                 if child_uuid in class_dict:
                                     child_info = class_dict[child_uuid].copy()
                                     child_info.pop("uuid", None)
-                                    result.append(child_info)
-                    return result
+                                    children.append(child_info)
+                            if children:
+                                root_info["children"] = children
+                                
+                            result.append(root_info)
+                    
+                    # Step 1: Create a map of inheritance relationships
+                    inheritance_map = {}  # Base UUID -> list of child UUIDs
+                    self.cursor.execute("""
+                    SELECT base_uuid, child_uuid FROM base_child_links
+                    WHERE direct = TRUE
+                    """)
+                    for base_uuid, child_uuid in self.cursor.fetchall():
+                        # Filter relationships - both classes must be in filtered set
+                        if (base_uuid in class_dict and child_uuid in class_dict and
+                            self._is_class_in_project(base_uuid, project_dir) and
+                            self._is_class_in_project(child_uuid, project_dir)):
+                            if base_uuid not in inheritance_map:
+                                inheritance_map[base_uuid] = []
+                            inheritance_map[base_uuid].append(child_uuid)
+                    
+                    # Step 2: Identify different types of classes
+                    # Child classes appear in inheritance relationships
+                    child_classes = set()
+                    for children in inheritance_map.values():
+                        child_classes.update(children)
+                    # Root classes are in our filtered set but not children of any other class
+                    all_filtered_classes = set(class_dict.keys())
+                    root_classes = all_filtered_classes - child_classes
+                    # Standalone classes
+                    standalone_classes = all_filtered_classes - set(inheritance_map.keys()) - child_classes
+                    
+                    # Step 3: Build nested result list
+                    nested_result = []
+                    processed_uuids = set()
+                    def build_class_node(uuid):
+                        if uuid in processed_uuids:
+                            return None
+                        processed_uuids.add(uuid)
+                        class_info = class_dict.get(uuid)
+                        if not class_info:
+                            return None
+                        node = class_info.copy()
+                        node.pop("uuid", None)
+                        children = inheritance_map.get(uuid, [])
+                        if children:
+                            child_nodes = []
+                            for child_uuid in sorted(children, 
+                                                     key=lambda x: class_dict.get(x, {}).get("name", "")):
+                                child_node = build_class_node(child_uuid)
+                                if child_node:
+                                    child_nodes.append(child_node)
+                            if child_nodes:
+                                node["children"] = child_nodes
+                                
+                        return node
+                    for root_uuid in sorted(root_classes, 
+                                           key=lambda x: class_dict.get(x, {}).get("name", "")):
+                        root_node = build_class_node(root_uuid)
+                        if root_node:
+                            nested_result.append(root_node)
+                    for standalone_uuid in sorted(standalone_classes,
+                                                key=lambda x: class_dict.get(x, {}).get("name", "")):
+                        if standalone_uuid not in processed_uuids:
+                            class_info = class_dict.get(standalone_uuid)
+                            if class_info:
+                                node = class_info.copy()
+                                node.pop("uuid", None)
+                                nested_result.append(node)
+
+                    # Step 4: Check if any classes that should be in result were missed
+                    missing_uuids = all_filtered_classes - processed_uuids
+                    if missing_uuids:
+                        logger.debug(f"Found {len(missing_uuids)} classes not included in result")
+                        for uuid in missing_uuids:
+                            if uuid in class_dict:
+                                class_name = class_dict[uuid].get('name', '')
+                                logger.debug(f"Missing class: {class_name}")
+                                class_info = class_dict[uuid].copy()
+                                class_info.pop("uuid", None)
+                                nested_result.append(class_info)
+                    
+                    return nested_result
                     
             except (sqlite3.Error, Exception) as e:
                 logger.debug(f"Using simple class listing due to: {e}")
@@ -1364,7 +1444,6 @@ class EntityDatabase:
                 clean_info = class_info.copy()
                 clean_info.pop("uuid", None)
                 result.append(clean_info)
-                
             return result
         except sqlite3.Error as e:
             logger.error(f"Error getting class statistics: {e}")
@@ -1469,6 +1548,32 @@ class EntityDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error getting entity declaration: {e}")
             return None
+    
+    def _is_class_in_project(self, class_uuid: str, project_dir: Optional[str] = None) -> bool:
+        """Check if a class belongs to the project directory
+        
+        Args:
+            class_uuid: UUID of the class
+            project_dir: Project directory to check against
+            
+        Returns:
+            True if the class is in the project directory, or if project_dir is None
+        """
+        if not project_dir or not project_dir.strip():
+            return True
+        project_dir = os.path.normpath(project_dir)
+        
+        try:
+            self.cursor.execute('''
+            SELECT file FROM entities WHERE uuid = ?
+            ''', (class_uuid,))
+            row = self.cursor.fetchone()
+            if not row or not row[0]:
+                return False  # No file associated with this UUID
+            file_path = row[0]
+            return file_path.startswith(project_dir)
+        except sqlite3.Error:
+            return False  # TODO: On error, assume not in project????
     
     def _get_definition_files(self, class_uuid: str) -> List[str]:
         """Get all definition files for a class
