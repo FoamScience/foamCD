@@ -16,7 +16,9 @@ from plugin_system import PluginManager
 
 logger = setup_logging()
 
-CPP_FILE_EXTENSIONS = ['.hpp', '.hxx', '.h++', '.hh', '.H', '.cpp', '.cxx', '.c++', '.cc', '.C']
+CPP_HEADER_EXTENSIONS = ['.hpp', '.hxx', '.h++', '.hh', '.H']
+CPP_IMPLEM_EXTENSIONS = ['.cpp', '.cxx', '.c++', '.cc', '.C']
+CPP_FILE_EXTENSIONS = [*CPP_HEADER_EXTENSIONS, *CPP_IMPLEM_EXTENSIONS]
 
 def configure_libclang(libclang_path: Optional[str] = None):
     """Configure libclang library path if necessary
@@ -426,12 +428,43 @@ class ClangParser:
         template_pos = base_class_name.find('<')
         if template_pos > 0:
             base_class_name = base_class_name[:template_pos]
+            
+        # Strip any namespace prefixes for more flexible matching
+        simple_name = base_class_name
+        namespace_pos = simple_name.rfind('::')
+        if namespace_pos > 0:
+            simple_name = simple_name[namespace_pos + 2:]
+        
+        found = False
         for _, entities in self.entities.items():
             for entity in entities:
                 if entity.name == base_class_name:
                     base_class_info['uuid'] = entity.uuid
+                    logger.debug(f"Found base class {base_class_name} with UUID {entity.uuid}")
+                    found = True
                     break
-        
+                elif entity.name == simple_name:
+                    base_class_info['uuid'] = entity.uuid
+                    logger.debug(f"Found base class {simple_name} with UUID {entity.uuid} (matched without namespace)")
+                    found = True
+                    break
+            if found:
+                break
+                
+        if not found and not base_class_info.get('uuid') and self.db:
+            try:
+                self.db.cursor.execute(
+                    "SELECT uuid FROM entities WHERE name = ? AND kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL')", 
+                    (simple_name,)
+                )
+                result = self.db.cursor.fetchone()
+                if result:
+                    base_class_info['uuid'] = result[0]
+                    logger.debug(f"Found base class {simple_name} with UUID {result[0]} in database")
+                    found = True
+            except Exception as e:
+                logger.warning(f"Error looking up base class in database: {e}")
+                
         return base_class_info
         
     def parse_file(self, filepath: str) -> List[Entity]:
@@ -468,6 +501,12 @@ class ClangParser:
         try:
             logger.debug(f"parsing translation unit {filepath} with index.parse")
             translation_unit = self.index.parse(filepath, clean_args)
+        except Exception as e:
+            import traceback
+            logger.error(f"Exception while parsing {filepath}: {e}\nTraceback: {traceback.format_exc()}")
+            return []
+            
+        try:
             
             if translation_unit is None:
                 import traceback
@@ -496,31 +535,122 @@ class ClangParser:
                     else:  # Note or remark
                         note_count += 1
                         logger.debug(f"[NOTE] {location}: {diag.spelling}")
-                
                 if error_count > 0:
-                    logger.error(f"Parsing diagnostics for {filepath}: {error_count} errors, {warning_count} warnings, {note_count} notes\nTraceback: {traceback.format_exc()}")
+                    logger.error(f"Parsing diagnostics for {filepath}: {error_count} errors, {warning_count} warnings, {note_count} notes")
+                    if error_count > 0:
+                        logger.error(f"Error parsing {filepath}: Failed to parse translation unit due to compilation errors.")
+                        return []
                 elif warning_count > 0:
                     logger.warning(f"Parsing diagnostics for {filepath}: {warning_count} warnings, {note_count} notes")
-                    
-                # Fatal error - can't continue with parsing
-                if error_count > 0:
-                    logger.error(f"Error parsing {filepath}: Failed to parse translation unit due to compilation errors.\nTraceback: {traceback.format_exc()}")
-                    return []
-                    
+            
+            cursor = translation_unit.cursor
+            file_entities = []
+            self._process_cursor(cursor, file_entities)
+            self.entities[filepath] = file_entities
+            
+            if self.db:
+                # First store all entities
+                for entity in file_entities:
+                    self.db.store_entity(entity.to_dict())
+                
+                # Then find and link declarations and definitions
+                self._find_and_link_declarations_definitions(cursor, filepath)
         except Exception as e:
             import traceback
-            logger.error(f"Exception while parsing {filepath}: {e}\nTraceback: {traceback.format_exc()}")
+            logger.error(f"Error processing file {filepath}: {e}\nTraceback: {traceback.format_exc()}")
             return []
-        
-        file_entities = []
-        self._process_cursor(translation_unit.cursor, file_entities)
-        self.entities[filepath] = file_entities
-        if self.db:
-            for entity in file_entities:
-                self.db.store_entity(entity.to_dict())
         
         logger.info(f"Successfully parsed {len(file_entities)} top-level entities")
         return file_entities
+        
+    def _find_and_link_declarations_definitions(self, cursor: clang.cindex.Cursor, filepath: str):
+        """Find declarations and their matching definitions and link them in the database
+        
+        This method identifies when a class or function is declared in one place and defined
+        in another, creating explicit links in the database to allow proper documentation
+        generation that shows all implementation files.
+        
+        Args:
+            cursor: libclang cursor for the translation unit
+            filepath: Path to the file being parsed
+        """
+        logger.debug(f"Finding and linking declarations and definitions in {filepath}")
+        processed_usrs = {}
+        def process_cursor_for_links(current_cursor):
+            if not current_cursor.location.file:
+                return
+            if current_cursor.kind in [
+                clang.cindex.CursorKind.FUNCTION_DECL,
+                clang.cindex.CursorKind.CXX_METHOD,
+                clang.cindex.CursorKind.CONSTRUCTOR,
+                clang.cindex.CursorKind.DESTRUCTOR,
+                clang.cindex.CursorKind.FUNCTION_TEMPLATE,
+                clang.cindex.CursorKind.CLASS_DECL,
+                clang.cindex.CursorKind.STRUCT_DECL,
+                clang.cindex.CursorKind.CLASS_TEMPLATE
+            ]:
+                try:
+                    usr = current_cursor.get_usr()
+                    if not usr or usr in processed_usrs:
+                        return
+                    processed_usrs[usr] = True
+                except Exception as e:
+                    logger.debug(f"Error getting USR: {e}")
+                    return
+                try:
+                    definition = current_cursor.get_definition()
+                    if not definition or definition == current_cursor:
+                        return
+                    if not current_cursor.location.file or not definition.location.file:
+                        return
+                    decl_file = os.path.realpath(current_cursor.location.file.name)
+                    def_file = os.path.realpath(definition.location.file.name)
+                    if decl_file == def_file:
+                        return
+                    
+                    logger.debug(f"Found declaration-definition pair: {current_cursor.spelling} in {decl_file} -> {def_file}")
+                    
+                    decl_start = current_cursor.extent.start
+                    decl_end = current_cursor.extent.end
+                    decl_location = (decl_file, decl_start.line, decl_start.column, decl_end.line, decl_end.column)
+                    def_start = definition.extent.start
+                    def_end = definition.extent.end
+                    def_location = (def_file, def_start.line, def_start.column, def_end.line, def_end.column)
+                    query = f"""
+                    SELECT uuid FROM entities 
+                    WHERE name = ? AND kind = ? AND file = ? AND line = ?
+                    """
+                    
+                    # Find declaration entity
+                    self.db.cursor.execute(query, (
+                        current_cursor.spelling, 
+                        str(current_cursor.kind), 
+                        decl_file, 
+                        decl_start.line
+                    ))
+                    decl_row = self.db.cursor.fetchone()
+                    
+                    # Find definition entity
+                    self.db.cursor.execute(query, (
+                        definition.spelling, 
+                        str(definition.kind), 
+                        def_file, 
+                        def_start.line
+                    ))
+                    def_row = self.db.cursor.fetchone()
+                    if decl_row and def_row:
+                        decl_uuid = decl_row[0]
+                        def_uuid = def_row[0]
+                        logger.debug(f"Linking declaration {current_cursor.spelling} in {decl_file} to definition in {def_file}")
+                        self.db.link_declaration_definition(decl_uuid, def_uuid)
+                except Exception as e:
+                    logger.debug(f"Error processing declaration-definition: {e}")
+                    raise
+            
+            for child in current_cursor.get_children():
+                process_cursor_for_links(child)
+
+        process_cursor_for_links(cursor)
     
     def _process_cursor(self, cursor: clang.cindex.Cursor, entities: List[Entity], 
                     parent: Optional[Entity] = None):
@@ -631,7 +761,44 @@ class ClangParser:
             for child in cursor.get_children():
                 self._process_cursor(child, entities, parent)
 
-    def export_to_database(self, output_path: str):
+    def resolve_inheritance_relationships(self) -> None:
+        """Resolve all inheritance relationships after all files have been parsed
+        
+        This method should be called after all files have been parsed to ensure
+        all entities are available for resolving inheritance relationships.
+        """
+        if not self.db:
+            logger.warning("Cannot resolve inheritance relationships without a database")
+            return
+        self.db.cursor.execute("""
+        SELECT i.class_uuid, i.class_name, i.base_name FROM inheritance i 
+        WHERE i.base_uuid IS NULL
+        """)
+        unresolved = self.db.cursor.fetchall()
+        logger.debug(f"Found {len(unresolved)} unresolved inheritance relationships")
+        resolved_count = 0
+        for class_uuid, class_name, base_name in unresolved:
+            self.db.cursor.execute("""
+            SELECT uuid FROM entities 
+            WHERE name = ? AND kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+            """, (base_name,))
+            base_result = self.db.cursor.fetchone()
+            
+            if base_result:
+                base_uuid = base_result[0]
+                self.db.cursor.execute("""
+                UPDATE inheritance 
+                SET base_uuid = ? 
+                WHERE class_uuid = ? AND base_name = ?
+                """, (base_uuid, class_uuid, base_name))
+                resolved_count += 1
+                logger.debug(f"Resolved base class {base_name} with UUID {base_uuid} for {class_name}")
+        
+        logger.debug(f"Resolved {resolved_count} out of {len(unresolved)} inheritance relationships")
+        self.db.commit()
+        self.db._populate_base_child_links()
+        
+    def export_to_database(self, output_path: str) -> None:
         """Export parsed entities to SQLite database
         
         Args:
@@ -641,20 +808,18 @@ class ClangParser:
             if output_path != self.db.db_path:
                 logger.info(f"Exporting entities to SQLite database {output_path}")
                 new_db = EntityDatabase(output_path)
-                all_entities = self.db.get_all_entities()
-                for entity in all_entities:
-                    new_db.store_entity(entity)
+                self.db.copy_to(new_db)
+                new_db.commit()
                 new_db.close()
                 logger.info(f"Exported entities to {output_path}")
         else:
             logger.info(f"Creating new SQLite database {output_path}")
             db = EntityDatabase(output_path)
             
-            # First pass: Store all entities without children to establish UUIDs
-            for file_entities in self.entities.values():
-                for entity in file_entities:
+            for filepath, entities in self.entities.items():
+                for entity in entities:
                     self._export_entity(db, entity)
-                
+            db.commit()
             db.close()
             logger.info(f"Exported entities to {output_path}")
             
@@ -665,21 +830,11 @@ class ClangParser:
             db: EntityDatabase instance
             entity: Entity to export
         """
-        # Create entity dictionary with proper parent-child relationships
         entity_dict = entity.to_dict()
-        
-        # Store custom fields if any from DSL plugins
         if hasattr(entity, 'custom_fields') and entity.custom_fields:
             entity_dict['custom_fields'] = entity.custom_fields
-        
-        # Remove children from dictionary - we'll process them separately
-        # to maintain proper parent-child relationships
         children = entity_dict.pop('children', [])
-        
-        # Store the entity
         db.store_entity(entity_dict)
-        
-        # Process children recursively
         for child in entity.children:
             self._export_entity(db, child)
 
@@ -933,6 +1088,10 @@ def main():
                     error_count += 1
             
             logger.info(f"Processing complete: {parsed_count} parsed, {unchanged_count} unchanged, {error_count} errors (from {len(target_files)} total files)")
+        
+        logger.info("Resolving inheritance relationships between entities...")
+        parser.resolve_inheritance_relationships()
+        logger.debug("Inheritance relationships resolved and base_child_links populated")
         
         logger.info("Parsing complete")
         return 0

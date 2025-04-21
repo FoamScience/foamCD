@@ -6,6 +6,8 @@ from typing import List, Dict, Any, Optional
 
 from logs import setup_logging
 
+from parse import CPP_IMPLEM_EXTENSIONS, CPP_HEADER_EXTENSIONS
+
 logger = setup_logging()
 
 class EntityDatabase:
@@ -39,6 +41,10 @@ class EntityDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error connecting to database: {e}")
             raise
+    
+    def commit(self):
+        """Commit the current transaction to the database"""
+        self.conn.commit()
     
     def _create_tables(self):
         """Create database tables if they don't exist"""
@@ -114,6 +120,28 @@ class EntityDatabase:
             ON custom_entity_fields (entity_uuid)
             ''')
             
+            # Declaration-definition linking table
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS decl_def_links (
+                decl_uuid TEXT NOT NULL,
+                def_uuid TEXT NOT NULL,
+                PRIMARY KEY (decl_uuid, def_uuid),
+                FOREIGN KEY (decl_uuid) REFERENCES entities (uuid) ON DELETE CASCADE,
+                FOREIGN KEY (def_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
+            )
+            ''')
+            
+            # Create indices for faster lookup of declarations and definitions
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_decl_def_links_decl_uuid 
+            ON decl_def_links (decl_uuid)
+            ''')
+            
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_decl_def_links_def_uuid 
+            ON decl_def_links (def_uuid)
+            ''')
+            
             # Method classification table
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS method_classification (
@@ -142,6 +170,7 @@ class EntityDatabase:
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS inheritance (
                 class_uuid TEXT NOT NULL,
+                class_name TEXT NOT NULL,
                 base_uuid TEXT,
                 base_name TEXT NOT NULL,
                 access_level TEXT NOT NULL,
@@ -152,10 +181,43 @@ class EntityDatabase:
             )
             ''')
             
-            # Create index for faster inheritance lookups
+            # Create indices for inheritance table
             self.cursor.execute('''
-            CREATE INDEX IF NOT EXISTS idx_inheritance_class_uuid ON inheritance (class_uuid)
+            CREATE INDEX idx_inheritance_class_name ON inheritance (class_name)
             ''')
+            self.cursor.execute('''
+            CREATE INDEX idx_inheritance_base_name ON inheritance (base_name)
+            ''')
+            self.cursor.execute('''
+            CREATE INDEX idx_inheritance_class_uuid ON inheritance (class_uuid)
+            ''')
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_inheritance_base_uuid ON inheritance (base_uuid)
+            ''')
+            
+            # Base-child inheritance relationship table with direct and recursive links
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS base_child_links (
+                base_uuid TEXT NOT NULL,
+                child_uuid TEXT NOT NULL,
+                direct BOOLEAN NOT NULL, -- TRUE for direct inheritance, FALSE for recursive parent-child
+                depth INTEGER NOT NULL, -- 1 for direct parent, 2+ for grandparent, etc.
+                access_level TEXT NOT NULL, -- PUBLIC, PROTECTED, PRIVATE; effective access level for this relationship
+                PRIMARY KEY (base_uuid, child_uuid),
+                FOREIGN KEY (base_uuid) REFERENCES entities (uuid) ON DELETE CASCADE,
+                FOREIGN KEY (child_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
+            )
+            ''')
+            
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_base_child_links_base_uuid 
+            ON base_child_links (base_uuid)
+            ''')
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_base_child_links_child_uuid 
+            ON base_child_links (child_uuid)
+            ''')
+            self._populate_base_child_links()
             
             # Create tables for structured documentation
             self.cursor.execute('''
@@ -334,42 +396,269 @@ class EntityDatabase:
             logger.error(f"Error storing class classification for {uuid}: {e}")
     
     def _store_inheritance(self, class_uuid: str, base_classes: List[Dict[str, Any]]) -> None:
-        """Store inheritance relationships
+        """Store inheritance relationships and update base-child links
         
         Args:
             class_uuid: UUID of the derived class
-            base_classes: List of base class dictionaries
+            base_classes: List of base class dictionaries with base class information
         """
         try:
-            for base in base_classes:
-                base_uuid = base.get('uuid')
-                base_name = base['name']
-                if base_uuid:
-                    self.cursor.execute('SELECT 1 FROM entities WHERE uuid = ?', (base_uuid,))
-                    base_exists = self.cursor.fetchone() is not None
-                    if not base_exists:
-                        logger.warning(f"Base class with UUID {base_uuid} not found in database. "
-                                      f"Creating placeholder entity for {base_name}")
-                        self.cursor.execute('''
-                        INSERT OR IGNORE INTO entities 
-                        (uuid, name, kind, file, line, column, documentation, access_level, type_info, parent_uuid)
-                        VALUES (?, ?, ?, NULL, NULL, NULL, NULL, 'PUBLIC', NULL, NULL)
-                        ''', (base_uuid, base_name, 'CLASS_DECL'))
+            logger.debug(f"Storing inheritance for class {class_uuid} with {len(base_classes)} base classes")
+            
+            # Clear inheritence records, this is important when loading existing databases
+            # as inheritence hierarchies are suseptable to change
+            self.cursor.execute('''
+            DELETE FROM inheritance WHERE class_uuid = ?
+            ''', (class_uuid,))
+            
+            self.cursor.execute('SELECT name FROM entities WHERE uuid = ?', (class_uuid,))
+            class_name_row = self.cursor.fetchone()
+            class_name = class_name_row[0] if class_name_row else 'UnknownClass'
+            logger.debug(f"Found class name for {class_uuid}: {class_name}")
+            for base_class in base_classes:
+                base_uuid = base_class.get('uuid', None)
                 self.cursor.execute('''
-                INSERT OR REPLACE INTO inheritance
-                (class_uuid, base_uuid, base_name, access_level, is_virtual)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO inheritance (class_uuid, class_name, base_uuid, base_name, access_level, is_virtual)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ''', (
                     class_uuid,
+                    class_name,
                     base_uuid,
-                    base_name,
-                    base.get('access', 'PUBLIC'),
-                    base.get('virtual', False)
+                    base_class['name'],
+                    base_class.get('access', 'PUBLIC'),
+                    base_class.get('virtual', False)
                 ))
-                logger.debug(f"Stored inheritance relationship: {class_uuid} -> {base_name}")
+                
+                if base_uuid:
+                    logger.debug(f"Stored inheritance relationship with UUID: {class_name} ({class_uuid}) inherits from {base_class['name']} ({base_uuid})")
+                    access_level = base_class.get('access', 'PUBLIC')
+                    self.cursor.execute('''
+                    INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth, access_level)
+                    VALUES (?, ?, ?, 1, ?)
+                    ''', (base_uuid, class_uuid, True, access_level))
+                    self.cursor.execute('''
+                    SELECT base_uuid, depth, access_level FROM base_child_links 
+                    WHERE child_uuid = ?
+                    ''', (base_uuid,))
+                    
+                    for row in self.cursor.fetchall():
+                        ancestor_uuid = row[0]
+                        depth = row[1]
+                        ancestor_access = row[2]
+                        effective_access = access_level
+                        if ancestor_access == 'PRIVATE' or access_level == 'PRIVATE':
+                            effective_access = 'PRIVATE'
+                        elif ancestor_access == 'PROTECTED' or access_level == 'PROTECTED':
+                            effective_access = 'PROTECTED'
+                        self.cursor.execute('''
+                        INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth, access_level)
+                        VALUES (?, ?, ?, ?, ?)
+                        ''', (ancestor_uuid, class_uuid, False, depth + 1, effective_access))
+                else:
+                    logger.debug(f"Stored inheritance relationship without UUID: {class_name} ({class_uuid}) inherits from {base_class['name']}")
+            self._update_recursive_base_child_links(class_uuid)
+            self.conn.commit()
+
         except sqlite3.Error as e:
-            logger.error(f"Error storing inheritance for {class_uuid}: {e}")
+            logger.error(f"Error storing inheritance relationships: {e}")
+            self.conn.rollback()
+            
+    def _update_recursive_base_child_links(self, class_uuid: str):
+        """Update recursive base-child links for all children of a class
+        
+        This method ensures that when a class's inheritance is updated,
+        all its children also get updated recursive relationships with the
+        new ancestors.
+        
+        Args:
+            class_uuid: UUID of the class whose children need updating
+        """
+        try:
+            self.cursor.execute('''
+            SELECT child_uuid FROM base_child_links
+            WHERE base_uuid = ? AND direct = ?
+            ''', (class_uuid, True))
+            direct_children = [row[0] for row in self.cursor.fetchall()]
+            for child_uuid in direct_children:
+                self.cursor.execute('''
+                SELECT base_uuid, depth FROM base_child_links 
+                WHERE child_uuid = ? AND child_uuid != ?
+                ''', (class_uuid, child_uuid))  # Avoid self-references
+                for row in self.cursor.fetchall():
+                    ancestor_uuid = row[0]
+                    depth = row[1]
+                    self.cursor.execute('''
+                    INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth)
+                    VALUES (?, ?, ?, ?)
+                    ''', (ancestor_uuid, child_uuid, False, depth + 1))
+                self._update_recursive_base_child_links(child_uuid)
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error updating recursive base-child links: {e}")
+
+    def _populate_base_child_links(self):
+        """Populate base_child_links table from existing inheritance data
+        
+        This method reads from the inheritance table and builds both direct and
+        recursive inheritance relationships in the base_child_links table.
+        """
+        try:
+            self.cursor.execute("SELECT COUNT(*) FROM base_child_links")
+            count = self.cursor.fetchone()[0]
+            if count == 0:
+                logger.debug("Populating base_child_links table from existing inheritance data")
+                self.cursor.execute("DELETE FROM base_child_links")
+                self.cursor.execute("""
+                SELECT i.base_uuid, i.class_uuid, i.base_name, e.name AS class_name
+                FROM inheritance i
+                LEFT JOIN entities e ON i.class_uuid = e.uuid
+                """)
+                inheritance_rows = self.cursor.fetchall()
+                logger.info(f"Found {len(inheritance_rows)} inheritance relationships")
+                for row in inheritance_rows:
+                    base_uuid = row[0]
+                    class_uuid = row[1]
+                    base_name = row[2]
+                    class_name = row[3]
+                    logger.debug(f"Inheritance: {base_name} ({base_uuid}) <- {class_name} ({class_uuid})")
+                
+                self.cursor.execute("""
+                SELECT base_uuid, class_uuid, base_name, access_level
+                FROM inheritance 
+                WHERE base_uuid IS NOT NULL
+                """)
+                
+                direct_relations = []
+                valid_relations = 0
+                
+                for row in self.cursor.fetchall():
+                    base_uuid = row[0]
+                    class_uuid = row[1]
+                    base_name = row[2]
+                    access_level = row[3]
+                    if not base_uuid:
+                        logger.warning(f"Inheritance record has NULL base_uuid for base class {base_name}")
+                        self.cursor.execute(
+                            "SELECT uuid FROM entities WHERE name = ? AND kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL')", 
+                            (base_name,)
+                        )
+                        base_lookup = self.cursor.fetchone()
+                        if base_lookup:
+                            base_uuid = base_lookup[0]
+                            logger.info(f"Resolved base_uuid for {base_name}: {base_uuid}")
+                            self.cursor.execute(
+                                "UPDATE inheritance SET base_uuid = ? WHERE class_uuid = ? AND base_name = ?", 
+                                (base_uuid, class_uuid, base_name)
+                            )
+                        else:
+                            logger.warning(f"Could not resolve base_uuid for {base_name}, skipping")
+                            continue
+                    if not class_uuid:
+                        logger.warning(f"Skipping inheritance with NULL class_uuid for base {base_uuid}")
+                        continue
+                    
+                    self.cursor.execute("SELECT 1 FROM entities WHERE uuid = ?", (base_uuid,))
+                    if not self.cursor.fetchone():
+                        logger.warning(f"Base class with UUID {base_uuid} ({base_name}) not found in entities table!")
+                        continue
+                    self.cursor.execute("SELECT 1 FROM entities WHERE uuid = ?", (class_uuid,))
+                    if not self.cursor.fetchone():
+                        logger.warning(f"Derived class with UUID {class_uuid} not found in entities table!")
+                        continue
+                    direct_relations.append((base_uuid, class_uuid, access_level))
+                    valid_relations += 1
+                    
+                    try:
+                        self.cursor.execute("""
+                        INSERT OR REPLACE INTO base_child_links 
+                        (base_uuid, child_uuid, direct, depth, access_level) 
+                        VALUES (?, ?, ?, 1, ?)
+                        """, (base_uuid, class_uuid, True, access_level))
+                        logger.debug(f"Added direct relationship: {base_uuid} <- {class_uuid} ({access_level})")
+                    except sqlite3.Error as e:
+                        logger.error(f"Error inserting direct relationship: {e}")
+                
+                logger.debug(f"Found {valid_relations} valid inheritance relationships out of {len(inheritance_rows)}")
+
+                recursive_count = 0
+                for base_uuid, child_uuid, access_level in direct_relations:
+                    self.cursor.execute("""
+                    SELECT base_uuid, depth, access_level 
+                    FROM base_child_links 
+                    WHERE child_uuid = ?
+                    """, (base_uuid,))
+                    for row in self.cursor.fetchall():
+                        ancestor_uuid = row[0]
+                        ancestor_depth = row[1]
+                        ancestor_access = row[2]
+                        effective_access = access_level
+                        if ancestor_access == 'PRIVATE' or access_level == 'PRIVATE':
+                            effective_access = 'PRIVATE'
+                        elif ancestor_access == 'PROTECTED' or access_level == 'PROTECTED':
+                            effective_access = 'PROTECTED'
+                        # else keep PUBLIC
+                        try:
+                            self.cursor.execute("""
+                            INSERT OR REPLACE INTO base_child_links 
+                            (base_uuid, child_uuid, direct, depth, access_level) 
+                            VALUES (?, ?, ?, ?, ?)
+                            """, (ancestor_uuid, child_uuid, False, ancestor_depth + 1, effective_access))
+                            recursive_count += 1
+                        except sqlite3.Error as e:
+                            logger.error(f"Error inserting recursive relationship: {e}")
+                logger.info(f"Added {recursive_count} recursive inheritance relationships")
+                self.conn.commit()
+                logger.info("Successfully populated base_child_links table")
+                # Verify that important commit action
+                self.cursor.execute("SELECT COUNT(*) FROM base_child_links")
+                new_count = self.cursor.fetchone()[0]
+                logger.info(f"Created {new_count} base-child links")
+        except sqlite3.Error as e:
+            logger.error(f"Error populating base_child_links: {e}")
+            self.conn.rollback()
     
+    def _update_recursive_base_child_links(self, class_uuid: str):
+        """Update recursive base-child links for all children of a class
+        
+        This method ensures that when a class's inheritance is updated,
+        all its children also get updated recursive relationships with the
+        new ancestors.
+        
+        Args:
+            class_uuid: UUID of the class whose children need updating
+        """
+        try:
+            self.cursor.execute('''
+            SELECT child_uuid, access_level FROM base_child_links
+            WHERE base_uuid = ? AND direct = TRUE
+            ''', (class_uuid,))
+            child_rows = self.cursor.fetchall()
+            for child_row in child_rows:
+                child_uuid = child_row[0]
+                child_access_level = child_row[1]
+                self.cursor.execute('''
+                SELECT base_uuid, depth, access_level FROM base_child_links
+                WHERE child_uuid = ? AND child_uuid != ?
+                ''', (class_uuid, child_uuid))
+                for row in self.cursor.fetchall():
+                    ancestor_uuid = row[0]
+                    depth = row[1]
+                    ancestor_access = row[2]
+                    effective_access = child_access_level
+                    if ancestor_access == 'PRIVATE' or child_access_level == 'PRIVATE':
+                        effective_access = 'PRIVATE'
+                    elif ancestor_access == 'PROTECTED' or child_access_level == 'PROTECTED':
+                        effective_access = 'PROTECTED'
+                    # else keep PUBLIC, code repeated here? time to refactor?
+                    self.cursor.execute('''
+                    INSERT OR REPLACE INTO base_child_links (base_uuid, child_uuid, direct, depth, access_level)
+                    VALUES (?, ?, FALSE, ?, ?)
+                    ''', (ancestor_uuid, child_uuid, depth + 1, effective_access))
+                self._update_recursive_base_child_links(child_uuid)
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error updating recursive base-child links: {e}")
+
     def _store_parsed_documentation(self, uuid: str, parsed_doc: Dict[str, Any]) -> None:
         """Store parsed documentation
         
@@ -673,6 +962,83 @@ class EntityDatabase:
         except sqlite3.Error as e:
             logger.error(f"Error getting entity {uuid}: {e}")
             raise
+            
+    def get_entity_by_uuid(self, uuid: str, include_children: bool = False) -> Optional[Dict[str, Any]]:
+        """Get an entity by UUID with optional children
+        
+        Args:
+            uuid: UUID of the entity
+            include_children: Whether to include child entities
+            
+        Returns:
+            Entity dictionary with children or None if not found
+        """
+        try:
+            entity = self.get_entity(uuid)
+            if not entity:
+                return None
+            if "METHOD" in entity.get("kind", ""):
+                self.cursor.execute('''
+                SELECT * FROM method_classification
+                WHERE entity_uuid = ?
+                ''', (uuid,))
+                method_info = self.cursor.fetchone()
+                if method_info:
+                    entity["method_info"] = dict(method_info)
+            if "CLASS" in entity.get("kind", "") or "STRUCT" in entity.get("kind", ""):
+                self.cursor.execute('''
+                SELECT * FROM class_classification
+                WHERE entity_uuid = ?
+                ''', (uuid,))
+                class_info = self.cursor.fetchone()
+                if class_info:
+                    entity["class_info"] = dict(class_info)
+                self.cursor.execute('''
+                SELECT * FROM inheritance
+                WHERE class_uuid = ?
+                ''', (uuid,))
+                base_classes = [dict(row) for row in self.cursor.fetchall()]
+                if base_classes:
+                    entity["base_classes"] = base_classes
+            if include_children and 'children' not in entity:
+                self.cursor.execute('''
+                SELECT uuid FROM entities
+                WHERE parent_uuid = ?
+                ''', (uuid,))
+                children = []
+                for row in self.cursor.fetchall():
+                    child = self.get_entity_by_uuid(row[0], include_children=True)
+                    if child:
+                        children.append(child)
+                entity["children"] = children
+                
+            return entity
+        except sqlite3.Error as e:
+            logger.error(f"Error getting entity by UUID {uuid}: {e}")
+            return None
+            
+    def get_entities_by_kind(self, kinds: List[str]) -> List[Dict[str, Any]]:
+        """Get entities matching specific kinds
+        
+        Args:
+            kinds: List of entity kinds to match
+            
+        Returns:
+            List of entity dictionaries matching the kinds
+        """
+        try:
+            placeholders = ', '.join(['?' for _ in kinds])
+            query = f"SELECT uuid FROM entities WHERE kind IN ({placeholders}) AND parent_uuid IS NULL"
+            self.cursor.execute(query, kinds)
+            entities = []
+            for row in self.cursor.fetchall():
+                entity = self.get_entity_by_uuid(row[0])
+                if entity:
+                    entities.append(entity)
+            return entities
+        except Exception as e:
+            logger.error(f"Error getting entities by kind: {e}")
+            return []
     
     def _get_custom_entity_fields(self, uuid: str) -> Dict[str, Any]:
         """Get custom entity fields for an entity
@@ -694,8 +1060,6 @@ class EntityDatabase:
                 field_name = row[0]
                 field_type = row[1]
                 value = None
-                
-                # Get value based on type
                 if field_type == 'TEXT':
                     value = row[2]  # text_value
                 elif field_type == 'INTEGER':
@@ -704,7 +1068,7 @@ class EntityDatabase:
                     value = row[4]  # real_value
                 elif field_type == 'BOOLEAN':
                     value = bool(row[5])  # bool_value
-                elif field_type == 'JSON':
+                elif field_type == 'JSON': # not sure about usefullnes of JSON support here...
                     import json
                     try:
                         value = json.loads(row[6]) if row[6] else None  # json_value
@@ -897,4 +1261,342 @@ class EntityDatabase:
             return {row[0]: row[1] for row in self.cursor.fetchall()}
         except sqlite3.Error as e:
             logger.error(f"Error getting feature usage counts: {e}")
-            raise
+            return {}
+            
+    def get_class_stats(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get detailed information about classes in the codebase
+        
+        Args:
+            project_dir: Optional project directory to filter by (only include classes from files in this dir)
+            
+        Returns:
+            List of class information dictionaries grouped by inheritance hierarchy
+        """
+        try:
+            file_filter = ""
+            file_filter_params = []
+            if project_dir and project_dir.strip():
+                project_dir = os.path.normpath(project_dir)
+                logger.debug(f"Filtering classes by project directory: {project_dir}")
+                file_filter = "AND file LIKE ? || '%'"
+                file_filter_params = [project_dir]
+            query = f"""
+            SELECT uuid, name, file, line, end_line, parent_uuid
+            FROM entities
+            WHERE kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+            {file_filter}
+            """
+            
+            self.cursor.execute(query, file_filter_params)
+            class_dict = {}
+            for row in self.cursor.fetchall():
+                class_uuid = row[0]
+                class_name = row[1]
+                decl_file = row[2]
+                start_line = row[3]
+                end_line = row[4]
+                parent_uuid = row[5]
+                namespace = self._get_namespace_path(parent_uuid)
+                def_files = self._get_definition_files(class_uuid)
+                if decl_file and def_files:
+                    def_files = [f for f in def_files if os.path.realpath(f) != os.path.realpath(decl_file)]
+                uri = f"/api/{namespace.replace('::', '_')}_{class_name}"
+                class_info = {
+                    "uuid": class_uuid,
+                    "name": class_name,
+                    "namespace": namespace,
+                    "uri": uri,
+                    "declaration_file": f"{decl_file}#L{start_line}-L{end_line if end_line else start_line}" if decl_file else None,
+                }
+                if def_files:
+                    class_info["definition_files"] = def_files
+                class_dict[class_uuid] = class_info
+            try:
+                self.cursor.execute("SELECT COUNT(*) FROM base_child_links")
+                has_base_child_links = self.cursor.fetchone()[0] > 0
+                if has_base_child_links:
+                    query = f"""
+                    SELECT DISTINCT e.uuid 
+                    FROM entities e
+                    JOIN base_child_links bcl ON e.uuid = bcl.base_uuid
+                    WHERE e.kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                    AND e.uuid NOT IN (SELECT child_uuid FROM base_child_links WHERE direct = TRUE)
+                    {file_filter}
+                    """
+                    self.cursor.execute(query, file_filter_params)
+                    root_uuids = [row[0] for row in self.cursor.fetchall()]
+                    if not root_uuids:
+                        root_uuids = list(class_dict.keys())
+                    result = []
+                    root_uuids.sort(key=lambda uuid: class_dict.get(uuid, {}).get("name", ""))
+                    
+                    for i, root_uuid in enumerate(root_uuids):
+                        if i > 0:
+                            result.append({"name": "<<separator>>"})
+                            
+                        if root_uuid in class_dict:
+                            root_info = class_dict[root_uuid].copy()
+                            root_info.pop("uuid", None)
+                            result.append(root_info)
+                            query = f"""
+                            SELECT e.uuid 
+                            FROM entities e
+                            JOIN base_child_links bcl ON e.uuid = bcl.child_uuid
+                            WHERE bcl.base_uuid = ? AND bcl.direct = TRUE
+                            {file_filter}
+                            ORDER BY e.name
+                            """
+                            params = [root_uuid] + file_filter_params
+                            self.cursor.execute(query, params)
+                            for row in self.cursor.fetchall():
+                                child_uuid = row[0]
+                                if child_uuid in class_dict:
+                                    child_info = class_dict[child_uuid].copy()
+                                    child_info.pop("uuid", None)
+                                    result.append(child_info)
+                    return result
+                    
+            except (sqlite3.Error, Exception) as e:
+                logger.debug(f"Using simple class listing due to: {e}")
+
+            result = []
+            for class_info in sorted(class_dict.values(), key=lambda c: c["name"]):
+                clean_info = class_info.copy()
+                clean_info.pop("uuid", None)
+                result.append(clean_info)
+                
+            return result
+        except sqlite3.Error as e:
+            logger.error(f"Error getting class statistics: {e}")
+            return []
+    
+    def _get_namespace_path(self, entity_uuid: str) -> str:
+        """Get the fully qualified namespace path for an entity
+        
+        Args:
+            entity_uuid: UUID of the entity
+            
+        Returns:
+            Fully qualified namespace path (e.g. 'std::vector')
+        """
+        try:
+            path = []
+            current_uuid = entity_uuid
+            while current_uuid:
+                self.cursor.execute('''
+                SELECT name, kind, parent_uuid FROM entities
+                WHERE uuid = ?
+                ''', (current_uuid,))
+                row = self.cursor.fetchone()
+                if not row:
+                    break
+                name, kind, parent_uuid = row
+                if kind == 'NAMESPACE':
+                    path.append(name)
+                current_uuid = parent_uuid
+            path.reverse()
+            return '::'.join(path) if path else ""
+        except sqlite3.Error as e:
+            logger.error(f"Error getting namespace path: {e}")
+            return ""
+    
+    def link_declaration_definition(self, decl_uuid: str, def_uuid: str) -> bool:
+        """Link a declaration to its definition
+        
+        Args:
+            decl_uuid: UUID of the declaration entity
+            def_uuid: UUID of the definition entity
+            
+        Returns:
+            True if link was successfully created, False otherwise
+        """
+        try:
+            self.cursor.execute('''
+            INSERT OR IGNORE INTO decl_def_links (decl_uuid, def_uuid)
+            VALUES (?, ?)
+            ''', (decl_uuid, def_uuid))
+            self.conn.commit()
+            return True
+        except sqlite3.Error as e:
+            logger.error(f"Error linking declaration to definition: {e}")
+            return False
+    
+    def get_entity_definitions(self, decl_uuid: str) -> List[Dict[str, Any]]:
+        """Get all definitions of an entity
+        
+        Args:
+            decl_uuid: UUID of the declaration entity
+            
+        Returns:
+            List of definition entity dictionaries
+        """
+        try:
+            self.cursor.execute('''
+            SELECT def_uuid FROM decl_def_links
+            WHERE decl_uuid = ?
+            ''', (decl_uuid,))
+            
+            definitions = []
+            for row in self.cursor.fetchall():
+                definition = self.get_entity_by_uuid(row[0])
+                if definition:
+                    definitions.append(definition)
+            
+            return definitions
+        except sqlite3.Error as e:
+            logger.error(f"Error getting entity definitions: {e}")
+            return []
+    
+    def get_entity_declaration(self, def_uuid: str) -> Optional[Dict[str, Any]]:
+        """Get the declaration of an entity
+        
+        Args:
+            def_uuid: UUID of the definition entity
+            
+        Returns:
+            Declaration entity dictionary or None if not found
+        """
+        try:
+            self.cursor.execute('''
+            SELECT decl_uuid FROM decl_def_links
+            WHERE def_uuid = ?
+            ''', (def_uuid,))
+            
+            row = self.cursor.fetchone()
+            if row:
+                return self.get_entity_by_uuid(row[0])
+            return None
+        except sqlite3.Error as e:
+            logger.error(f"Error getting entity declaration: {e}")
+            return None
+    
+    def _get_definition_files(self, class_uuid: str) -> List[str]:
+        """Get all definition files for a class
+        
+        Args:
+            class_uuid: UUID of the class
+            
+        Returns:
+            List of file paths where the class is defined
+        """
+        try:
+            files = set()
+            self.cursor.execute('''
+            SELECT DISTINCT file FROM entities
+            WHERE parent_uuid = ? AND kind LIKE '%METHOD%' AND file IS NOT NULL
+            ''', (class_uuid,))
+            
+            for row in self.cursor.fetchall():
+                files.add(row[0])
+            self.cursor.execute('''
+            SELECT e.file FROM entities e
+            JOIN decl_def_links l ON e.uuid = l.def_uuid
+            WHERE l.decl_uuid = ? AND e.file IS NOT NULL
+            ''', (class_uuid,))
+            
+            for row in self.cursor.fetchall():
+                files.add(row[0])
+            self.cursor.execute('''
+            SELECT e2.file FROM entities e1
+            JOIN decl_def_links l ON e1.uuid = l.decl_uuid
+            JOIN entities e2 ON e2.uuid = l.def_uuid
+            WHERE e1.parent_uuid = ? AND e2.file IS NOT NULL
+            ''', (class_uuid,))
+            
+            for row in self.cursor.fetchall():
+                files.add(row[0])
+            self.cursor.execute('''
+            SELECT file FROM entities WHERE uuid = ?
+            ''', (class_uuid,))
+            
+            decl_row = self.cursor.fetchone()
+            if decl_row and decl_row[0]:
+                decl_file = decl_row[0]
+                if decl_file.endswith(tuple(CPP_HEADER_EXTENSIONS)):
+                    base_name = os.path.splitext(decl_file)[0]
+                    impl_extensions = tuple(CPP_IMPLEM_EXTENSIONS)
+                    for ext in impl_extensions:
+                        impl_file = base_name + ext
+                        if os.path.exists(impl_file):
+                            files.add(impl_file)
+                
+            return list(files)
+        except sqlite3.Error as e:
+            logger.error(f"Error getting definition files: {e}")
+            return []
+    
+    def get_namespace_stats(self, project_dir: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Get statistics about namespaces in the codebase
+        
+        Args:
+            project_dir: Optional project directory to filter by (only include namespaces from files in this dir)
+            
+        Returns:
+            List of namespace statistics with counts for different entity types
+        """
+        try:
+            file_filter = ""
+            file_filter_params = []
+            if project_dir and project_dir.strip():
+                project_dir = os.path.normpath(project_dir)
+                logger.debug(f"Filtering namespaces by project directory: {project_dir}")
+                file_filter = "AND file LIKE ? || '%'"
+                file_filter_params = [project_dir]
+            query = f"""
+            SELECT DISTINCT e.name 
+            FROM entities e
+            WHERE e.kind = 'NAMESPACE'
+            {file_filter}
+            ORDER BY e.name
+            """
+            self.cursor.execute(query, file_filter_params)
+            namespace_names = [row[0] for row in self.cursor.fetchall()]
+            
+            if not namespace_names:
+                logger.warning(f"No namespaces found{' in project directory' if project_dir else ''}")
+                return []
+                
+            logger.debug(f"Found {len(namespace_names)} unique namespaces: {', '.join(namespace_names)}")
+            
+            namespaces = []
+            for ns_name in namespace_names:
+                query = f"""
+                SELECT uuid FROM entities 
+                WHERE kind = 'NAMESPACE' AND name = ?
+                {file_filter}
+                """
+                
+                self.cursor.execute(query, [ns_name] + file_filter_params)
+                ns_uuids = [row[0] for row in self.cursor.fetchall()]
+                if not ns_uuids:
+                    continue  # Skip if no instances in project files
+                
+                total_classes = 0
+                total_functions = 0
+                for ns_uuid in ns_uuids:
+                    self.cursor.execute(f"""
+                    SELECT COUNT(*) FROM entities 
+                    WHERE parent_uuid = ? AND 
+                          (kind LIKE '%CLASS%' OR kind LIKE '%STRUCT%')
+                    {file_filter}
+                    """, [ns_uuid] + file_filter_params)
+                    total_classes += self.cursor.fetchone()[0]
+                    self.cursor.execute(f"""
+                    SELECT COUNT(*) FROM entities 
+                    WHERE parent_uuid = ? AND 
+                          (kind LIKE '%FUNCTION%' OR kind = 'CXX_METHOD')
+                    {file_filter}
+                    """, [ns_uuid] + file_filter_params)
+                    total_functions += self.cursor.fetchone()[0]
+                if total_classes > 0 or total_functions > 0:
+                    namespaces.append({
+                        "name": ns_name,
+                        "n_classes": total_classes,
+                        "n_functions": total_functions
+                    })
+            namespaces.sort(key=lambda x: x["name"])
+            
+            return namespaces
+        except sqlite3.Error as e:
+            logger.error(f"Error getting namespace statistics: {e}")
+            return []
