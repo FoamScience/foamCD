@@ -120,6 +120,9 @@ enum class ColorEnum { Red, Green, Blue };
 void DerivedClass::virtualMethod() {
     // Override implementation
 }
+void ExtendedDerivedClass::virtualMethod() {
+    // Final implementation
+}
 
 // Decltype implementation
 template<typename T1, typename T2>

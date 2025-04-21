@@ -178,6 +178,8 @@ class TestEntityDatabase(unittest.TestCase):
     
     def test_store_entity_features(self):
         """Test storing and retrieving entity C++ features"""
+        # Always store the base class first to avoid foreign key issues
+        self.db.store_entity(self.base_class)
         self.db.store_entity(self.class_entity)
         self.db.store_entity(self.method_entity)
         retrieved_entity = self.db.get_entity(self.method_uuid)
@@ -186,6 +188,8 @@ class TestEntityDatabase(unittest.TestCase):
     
     def test_method_classification(self):
         """Test storing and retrieving method classification"""
+        # Always store the base class first to avoid foreign key issues
+        self.db.store_entity(self.base_class)
         self.db.store_entity(self.class_entity)
         self.db.store_entity(self.method_entity)
         self.db.cursor.execute(
@@ -200,6 +204,8 @@ class TestEntityDatabase(unittest.TestCase):
     
     def test_parsed_documentation(self):
         """Test storing and retrieving parsed documentation"""
+        # Always store the base class first to avoid foreign key issues
+        self.db.store_entity(self.base_class)
         self.db.store_entity(self.class_entity)
         self.db.cursor.execute(
             "SELECT description, returns FROM parsed_docs WHERE entity_uuid = ?",

@@ -77,6 +77,11 @@ public:
     void virtualMethod() override;
 };
 
+class ExtendedDerivedClass : DerivedClass {
+public:
+    void virtualMethod() final;
+};
+
 // Decltype
 template<typename T1, typename T2>
 auto decltype_example(T1 a, T2 b) -> decltype(a + b);
