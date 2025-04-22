@@ -120,6 +120,9 @@ enum class ColorEnum { Red, Green, Blue };
 void DerivedClass::virtualMethod() {
     // Override implementation
 }
+void DerivedClass::virtualAbstractMethod() {
+    // implement abstract method
+}
 void ExtendedDerivedClass::virtualMethod() {
     // Final implementation
 }
@@ -149,10 +152,10 @@ ExplicitConversion::operator bool() const {
 // Default and delete implementation
 DefaultDeleteExample::DefaultDeleteExample() = default;
 
-// Variadic templates implementation
-template<typename... Args>
-void variadic_template_example(Args... args) {
-    // Empty implementation - just need the signature for detection
+// Factory method for DefaultDeleteExample
+std::unique_ptr<DefaultDeleteExample>
+DefaultDeleteExample::New() {
+    return std::make_unique<DefaultDeleteExample>();
 }
 
 // Explicit instantiation for a common case
@@ -435,6 +438,6 @@ void nontype_template_parameters_example() {
 
 } // namespace cpp_features_test
 
-int main (int argc, char *argv[]) {
-    return 0;
-}
+//int main (int argc, char *argv[]) {
+//    return 0;
+//}

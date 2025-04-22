@@ -13,8 +13,21 @@
 #include <type_traits>
 #include <utility>
 #include <functional>
+#include <memory>
+#include <concepts>
 
 namespace cpp_features_test {
+
+#define declareRunTimeSelectionTable\
+(ptrWrapper, baseType, argNames, argList, parList)                        \
+    template<class baseType##Type>                                        \
+    struct add##argNames##ConstructorToTable                              \
+    {                                                                     \
+        static ptrWrapper<baseType> New argList                           \
+        {                                                                 \
+            return ptrWrapper<baseType>(new baseType##Type parList);      \
+        }                                                                 \
+    };
 
 //-------------------------------------------------------------------------
 // C++98/03 features - Declarations only
@@ -35,6 +48,34 @@ float function_overload_example(float x);
 
 // References
 void references_example(int& ref_param);
+
+// OpenFOAM partial RTS
+class partialRTSClass {
+public:
+    declareRunTimeSelectionTable
+    (
+        std::unique_ptr,
+        partialRTSClass,
+        dictionary,
+        (
+            const int a,
+            const double b
+        ),
+        (a, b)
+    )
+
+    declareRunTimeSelectionTable
+    (
+        std::unique_ptr,
+        partialRTSClass,
+        istream,
+        (
+            const int a,
+            const double b
+        ),
+        (a, b)
+    )
+};
 
 //-------------------------------------------------------------------------
 // C++11 features - Declarations only
@@ -69,12 +110,16 @@ void variadic_template_example(Args... args);
 class BaseClass {
 public:
     virtual void virtualMethod();
+    virtual void virtualAbstractMethod() = 0;
     virtual ~BaseClass();
+    static int countBases() { return 0; }
 };
 
 class DerivedClass : public BaseClass {
 public:
+    DerivedClass() : BaseClass() {};
     void virtualMethod() override;
+    void virtualAbstractMethod() override;
 };
 
 class ExtendedDerivedClass : DerivedClass {
@@ -113,6 +158,8 @@ class DefaultDeleteExample {
 public:
     DefaultDeleteExample();
     DefaultDeleteExample(const DefaultDeleteExample&) = delete;
+    // Canonical way to create a new DefaultDeleteExample object
+    static std::unique_ptr<DefaultDeleteExample> New();
 };
 
 // Type traits
@@ -125,6 +172,12 @@ class StaticAssertExample {
 public:
     StaticAssertExample() {}
 };
+
+// Variadic templates implementation
+template<typename... Args>
+void variadic_template_example(Args... args) {
+    // Empty implementation - just need the signature for detection
+}
 
 //-------------------------------------------------------------------------
 // C++14 features - Declarations only
@@ -228,6 +281,15 @@ void parallel_algorithms_example();
 //-------------------------------------------------------------------------
 // C++20 features - Declarations only
 //-------------------------------------------------------------------------
+
+template<typename T>
+concept AddableLike = 
+requires(T a, T b) {
+    { a + b };
+} ||
+requires(T a, T b) {
+    { add(a, b) };
+};
 
 // Concepts (using SFINAE for compatibility)
 template<typename T, 
