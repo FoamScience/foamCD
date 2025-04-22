@@ -29,6 +29,7 @@ class Entity:
         self.is_pure_virtual = False
         self.is_override = False
         self.is_final = False
+        self.is_static = False  # For static methods
         self.is_abstract = False  # For classes with at least one pure virtual method
         self.is_defaulted = False
         self.is_deleted = False
@@ -183,8 +184,10 @@ class Entity:
                 'is_pure_virtual': self.is_pure_virtual,
                 'is_override': self.is_override,
                 'is_final': self.is_final,
+                'is_static': self.is_static,
                 'is_defaulted': self.is_defaulted,
-                'is_deleted': self.is_deleted
+                'is_deleted': self.is_deleted,
+                'return_type': self.type_info  # Map type_info to return_type
             }
         if self.kind in (CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, CursorKind.CLASS_TEMPLATE):
             result['class_info'] = {

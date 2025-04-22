@@ -8,6 +8,12 @@ import platform
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Any
 
+try:
+    from tree_sitter_subparser import TreeSitterSubparser, is_tree_sitter_available
+    TREE_SITTER_IMPORT_SUCCESS = True
+except ImportError:
+    TREE_SITTER_IMPORT_SUCCESS = False
+
 from logs import setup_logging
 from db import EntityDatabase
 from config import Config
@@ -152,13 +158,27 @@ class ClangParser:
     
     def __init__(self, compilation_database_dir: str = None, db: Optional[EntityDatabase] = None, 
                  config: Optional[Config] = None, plugin_dirs: List[str] = None, 
-                 disable_plugins: bool = False):
+                 disable_plugins: bool = False, use_tree_sitter_fallback: bool = True):
         if not LIBCLANG_CONFIGURED:
             raise ImportError("libclang is not properly configured. Parser functionality is unavailable.")
         self.config = config or Config()
         self.index = clang.cindex.Index.create()
         self.entities: Dict[str, List[Entity]] = {}
         self.db = db
+        
+        self.use_tree_sitter_fallback = use_tree_sitter_fallback and TREE_SITTER_IMPORT_SUCCESS
+        self.tree_sitter_subparser = None
+        if self.use_tree_sitter_fallback:
+            try:
+                if is_tree_sitter_available():
+                    self.tree_sitter_subparser = TreeSitterSubparser()
+                    logger.info("Tree-sitter fallback parser initialized")
+                else:
+                    logger.warning("Tree-sitter is not available. Fallback parsing is disabled.")
+                    self.use_tree_sitter_fallback = False
+            except Exception as e:
+                logger.warning(f"Could not initialize Tree-sitter fallback parser: {e}")
+                self.use_tree_sitter_fallback = False
         
         # Initialize plugin system if not disabled
         self.disable_plugins = disable_plugins
@@ -401,9 +421,13 @@ class ClangParser:
         except AttributeError:
             tokens = list(cursor.get_tokens())
             entity.is_final = any(t.spelling == 'final' for t in tokens)
-        
+            
         tokens = list(cursor.get_tokens())
         token_spellings = [t.spelling for t in tokens]
+        try:
+            entity.is_static = cursor.storage_class == clang.cindex.StorageClass.STATIC
+        except AttributeError:
+            entity.is_static = any(t.spelling == 'static' for t in tokens)
         
         if '=' in token_spellings:
             equal_index = token_spellings.index('=')
@@ -529,16 +553,39 @@ class ClangParser:
                 
         logger.info(f"Parsing {filepath} with args: {clean_args}")
         
+        use_fallback = False
+        libclang_error = None
         try:
             logger.debug(f"parsing translation unit {filepath} with index.parse")
             translation_unit = self.index.parse(filepath, clean_args)
         except Exception as e:
             import traceback
+            libclang_error = e
             logger.error(f"Exception while parsing {filepath}: {e}\nTraceback: {traceback.format_exc()}")
+            use_fallback = True
+            
+        if use_fallback and self.use_tree_sitter_fallback and self.tree_sitter_subparser:
+            logger.info(f"Heavy-duty macro code? But that is OK, trying a fail-tolerant alternative...")
+            logger.info(f"Trying Tree-sitter fallback for {filepath} after libclang error: {libclang_error}")
+            try:
+                tree_sitter_result = self.tree_sitter_subparser.parse_file(filepath)
+                file_entities = self._convert_tree_sitter_result(tree_sitter_result, filepath)
+                if file_entities:
+                    logger.info(f"Successfully parsed {len(file_entities)} entities with Tree-sitter fallback")
+                    self.entities[filepath] = file_entities
+                    if self.db:
+                        for entity in file_entities:
+                            self.db.store_entity(entity.to_dict())
+                    return file_entities
+                else:
+                    logger.warning(f"No entities extracted with Tree-sitter fallback")
+            except Exception as fallback_e:
+                logger.error(f"Tree-sitter fallback also failed for {filepath}: {fallback_e}")
             return []
             
+        if use_fallback:
+            return []
         try:
-            
             if translation_unit is None:
                 import traceback
                 logger.error(f"Error parsing {filepath}: Translation unit is None\nTraceback: {traceback.format_exc()}")
@@ -854,6 +901,65 @@ class ClangParser:
             db.close()
             logger.info(f"Exported entities to {output_path}")
             
+    def _convert_tree_sitter_result(self, tree_sitter_result: Dict[str, Any], filepath: str) -> List[Entity]:
+        """Convert Tree-sitter parsing result to Entity objects
+        
+        This method converts the lightweight parsing results from Tree-sitter into
+        Entity objects that can be used by the rest of the system. This is used when
+        libclang parsing fails and we need to fall back to Tree-sitter.
+        
+        Args:
+            tree_sitter_result: Result dictionary from Tree-sitter parser
+            filepath: Path to the file that was parsed
+            
+        Returns:
+            List of Entity objects representing the parsed entities
+        """
+        from entity import Entity
+        entities = []
+        
+        for class_info in tree_sitter_result.get("classes", []):
+            try:
+                class_entity = Entity(
+                    name=class_info.get("name", "UnknownClass"),
+                    kind="CLASS_DECL",
+                    file=filepath,
+                    line=class_info.get("start_line", 0) + 1,  # Tree-sitter uses 0-indexed lines
+                    column=class_info.get("start_column", 0),
+                    end_line=class_info.get("end_line", 0) + 1,
+                    end_column=class_info.get("end_column", 0),
+                    parent=None
+                )
+                class_entity.access_specifier = "public"
+                entities.append(class_entity)
+            except Exception as e:
+                logger.warning(f"Error converting Tree-sitter class to Entity: {e}")
+        for test_case in tree_sitter_result.get("test_cases", []):
+            try:
+                test_entity = Entity(
+                    name=test_case.get("name", "UnknownTest"),
+                    kind=clang.cindex.CursorKind.FUNCTION_DECL,
+                    location=(filepath,
+                              int(test_case.get("start_line", 0)) + 1,
+                              int(test_case.get("start_column", 0)),
+                              int(test_case.get("end_line", 0)) + 1,
+                              int(test_case.get("end_column", 0))),
+                    parent=None
+                )
+                test_entity.custom_fields["is_test_case"] = True
+                if "description" in test_case:
+                    test_entity.custom_fields["test_description"] = test_case["description"]
+                if "references" in test_case and test_case["references"]:
+                    test_entity.custom_fields["tree_sitter_references"] = ";".join(test_case["references"])
+                    logger.debug(f"Added {len(test_case['references'])} type references to test case: {test_case['references']}")
+                entities.append(test_entity)
+            except Exception as e:
+                import traceback
+                logger.warning(f"Error converting Tree-sitter test to Entity: {e}\nTraceback: {traceback.format_exc()}")
+                
+        logger.info(f"Converted {len(entities)} entities from Tree-sitter result")
+        return entities
+    
     def _export_entity(self, db, entity):
         """Helper method to recursively export an entity and its children to the database
         
