@@ -69,6 +69,7 @@ class EntityDatabase:
                 is_pure_virtual INTEGER,
                 is_override INTEGER,
                 is_final INTEGER,
+                is_static INTEGER,
                 is_abstract INTEGER,
                 is_defaulted INTEGER,
                 is_deleted INTEGER,
@@ -160,8 +161,10 @@ class EntityDatabase:
                 is_pure_virtual BOOLEAN,
                 is_override BOOLEAN,
                 is_final BOOLEAN,
+                is_static BOOLEAN,
                 is_defaulted BOOLEAN,
                 is_deleted BOOLEAN,
+                return_type TEXT,
                 FOREIGN KEY (entity_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
             )
             ''')
@@ -373,16 +376,18 @@ class EntityDatabase:
         try:
             self.cursor.execute('''
             INSERT OR REPLACE INTO method_classification
-            (entity_uuid, is_virtual, is_pure_virtual, is_override, is_final, is_defaulted, is_deleted)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            (entity_uuid, is_virtual, is_pure_virtual, is_override, is_final, is_static, is_defaulted, is_deleted, return_type)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (
                 uuid,
                 method_info.get('is_virtual', False),
                 method_info.get('is_pure_virtual', False),
                 method_info.get('is_override', False),
                 method_info.get('is_final', False),
+                method_info.get('is_static', False),
                 method_info.get('is_defaulted', False),
-                method_info.get('is_deleted', False)
+                method_info.get('is_deleted', False),
+                method_info.get('return_type', None)
             ))
         except sqlite3.Error as e:
             logger.error(f"Error storing method classification for {uuid}: {e}")
@@ -830,10 +835,10 @@ class EntityDatabase:
             INSERT OR REPLACE INTO entities 
             (uuid, name, kind, file, line, end_line, column, end_column, parent_uuid, 
              doc_comment, access, type_info, full_signature, is_virtual, is_pure_virtual, 
-             is_override, is_final, is_abstract, is_defaulted, is_deleted, linkage, is_external_reference)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             is_override, is_final, is_static, is_abstract, is_defaulted, is_deleted, linkage, is_external_reference)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (uuid, name, kind, file_path, line, end_line, column, end_column, parent_uuid, 
-                  doc_comment, access_level, type_info, full_signature, 0, 0, 0, 0, 0, 0, 0, None, 0))
+                  doc_comment, access_level, type_info, full_signature, 0, 0, 0, 0, 0, 0, 0, 0, None, 0))
             
             # Store method classification if present
             method_info = entity.get('method_info', {})
@@ -1054,6 +1059,42 @@ class EntityDatabase:
             return entities
         except Exception as e:
             logger.error(f"Error getting entities by kind: {e}")
+            return []
+            
+    def get_entities_by_kind_in_project(self, kinds: List[str], project_dir: str) -> List[Dict[str, Any]]:
+        """Get entities of specific kinds that are in a project directory
+        
+        Args:
+            kinds: List of entity kinds to match
+            project_dir: Project directory to filter entities by
+            
+        Returns:
+            List of entity dictionaries matching the kinds in the project directory
+        """
+        try:
+            if not project_dir:
+                return self.get_entities_by_kind(kinds)
+            project_dir = os.path.normpath(project_dir)
+            logger.debug(f"Filtering entities by project directory: {project_dir}")
+            kinds_str = ', '.join([f"'{kind}'" for kind in kinds])
+            query = f"""
+            SELECT uuid FROM entities 
+            WHERE kind IN ({kinds_str}) 
+            AND file LIKE '{project_dir}%' 
+            """
+            self.cursor.execute(query)
+            
+            entities = []
+            for row in self.cursor.fetchall():
+                entity = self.get_entity_by_uuid(row[0])
+                if entity:
+                    entities.append(entity)
+                    
+            logger.debug(f"Found {len(entities)} entities of kinds {kinds} in project directory {project_dir}")
+            return entities
+        except Exception as e:
+            import traceback
+            logger.error(f"Error getting entities by kind in project: {e}\nTraceback: {traceback.format_exc()}")
             return []
     
     def _get_custom_entity_fields(self, uuid: str) -> Dict[str, Any]:
