@@ -11,6 +11,67 @@ logger = setup_logging()
 
 # Default configuration schema
 DEFAULT_CONFIG = {
+    "markdown": {
+        "project_name": "My lib",  # Official project name
+        "git_repository": None,    # Root git folder, auto-sensed if None
+        "git_reference": None,     # Active git reference, priority: tags -> branches -> commit
+        "output_path": "markdown_docs", # Where to write the Markdown files, can have files already there
+        "classes_doc_uri": "/api/classes/{{namespace}}_{{name}}", # URI for a class
+        "concepts_doc_uri": "/api/concepts/{{namespace}}_{{name}}", # URI for a contept, NOT YET ACTIVE
+        "internal_linkage_pattern": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}", # Linking to file inside the project
+        "dependencies": [ # List of external dependencies, NOT YET ACTIVE
+            {
+                "path": [ # Paths to consider as depencies
+                    "/usr/include",
+                    "/usr/include/x86_64-linux-gnu",
+                ],
+                "dependency_url": "https://devdocs.io/cpp", # the root URI for this dependency, to docs or to code
+                "pattern": "{{dependency_url}}/{{name}}",   # Jinja2 template to refer to dependency
+            },
+        ],
+        "frontmatter": {                                # Control over what to put in the frontmatters
+            "index": {                                  # Index level
+                "filename": "_index.md",                
+                "date": "xxx-xx-xx",
+                "description": "My library's tagline",
+                "draft": False,
+                "weight": 2,
+                "layout": "library",                      # Important for Hugo to figure things out
+                "entry_points": True,                     # Enable Entry points listing to project
+                "rts_entry_points": True,                 # Enable RTS-powered entry points
+                "manual_entry_points": [],                # List of classes, by name, as extra entry points
+                "namespaces": True,                       # List namespaces in index
+                "classes_and_class_templates": True,      # List classes in index
+                "functions_and_function_templates": True, # List functions in index
+                "concepts": True,                         # List concepts
+                "cpp_modules": False,                     # List c++ modules, NOT YET ACTIVE
+            },
+            "entities": {                                 # Settings for documenting entities
+                "complain_about": [                       # Overview of entity readiness/quality, NOT YET ACTIVE
+                    "level_of_extensibility",
+                    "level_of_configurability",
+                    "level_of_testability",
+                    "rule_of_5_compliance",
+                    "sfinae_usage",
+                    "crtp_usag",
+                ],
+                "unit_tests": True,                       # Refer to potential unit tests in class descriptions
+                "unit_tests_compile_commands_dir": None,  # Path to compile_commands folder for the unit testing code
+                "unit_test_linkage_pattern": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}",
+                "knowledge_requirements": True,           # Overview of C++ features an entity leverage
+                "contributors_from_git": True,            # Contributers list from Git
+            },
+        },
+    },
+    "logging": {
+        "level": "INFO",        # Logging level (DEBUG, INFO, WARNING, ERROR)
+        "colored": True,        # Whether to use colored logging
+        "file": None,           # Log file path (None = console only)
+    },
+    "database": {
+        "path": "docs.db",      # SQLite database path
+        "create_tables": True   # Whether to create tables if they don't exist
+    },
     "parser": {
         "libclang_path": None,        # Path to libclang library if not in standard locations
         "compile_commands_dir": None, # Path to folder containing compile_commands.json
@@ -31,21 +92,6 @@ DEFAULT_CONFIG = {
         "target_files": [],           # Files to parse
         "plugin_dirs": [],            # Additional plugin directories to search
     },
-    "database": {
-        "path": "docs.db",      # SQLite database path
-        "create_tables": True   # Whether to create tables if they don't exist
-    },
-    "logging": {
-        "level": "INFO",        # Logging level (DEBUG, INFO, WARNING, ERROR)
-        "colored": True,        # Whether to use colored logging
-        "file": None            # Log file path (None = console only)
-    },
-    "features": {
-        "detect_inheritance": True,      # Detect inheritance relationships
-        "detect_virtuals": True,         # Detect virtual and pure virtual methods
-        "parse_doc_comments": True,      # Parse documentation comments
-        "access_level_grouping": True    # Group class members by access level
-    }
 }
 
 class Config:
