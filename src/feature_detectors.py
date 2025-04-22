@@ -930,6 +930,7 @@ class FeatureDetectorRegistry:
         self.register(ClassEnumDetector())
         self.register(TypeTraitsDetector())
         self.register(DefaultDeleteDetector())
+        self.register(NoReturnAttributeDetector())
         
         # C++14
         self.register(GenericLambdaDetector())
@@ -967,7 +968,16 @@ class FeatureDetectorRegistry:
         self.register(NonTypeTemplateParametersDetector())
         self.register(RangesDetector())
         
-    def detect_features(self, cursor, token_spellings, token_str, available_cursor_kinds) -> Set[str]:
+        # C++11 Attributes
+        self.register(NoReturnAttributeDetector())
+        # C++14 Attributes
+        self.register(DeprecatedAttributeDetector())
+        # C++17 Attributes
+        self.register(NodiscardMaybeUnusedAttributesDetector())
+        # C++20 Attributes
+        self.register(Cpp20AttributesDetector())
+        
+    def detect_features(self, cursor, token_spellings, token_str, available_cursor_kinds):
         """Run all registered detectors and return detected features"""
         features = set()
         
@@ -984,3 +994,94 @@ class FeatureDetectorRegistry:
                 logger.warning(f"Error in {name} detector: {e}")
                 
         return features
+
+# C++11 attribute detectors
+class NoReturnAttributeDetector(FeatureDetector):
+    def __init__(self):
+        super().__init__("noreturn_attribute", "C++11", "[[noreturn]] compiler attribute")
+    
+    def detect(self, cursor, token_spellings, token_str, available_cursor_kinds):
+        if '[[' in token_spellings and 'noreturn' in token_spellings and ']]' in token_spellings:
+            for i in range(len(token_spellings) - 2):
+                if token_spellings[i:i+3] == ['[[', 'noreturn', ']]']:
+                    logger.debug(f"Detected [[noreturn]] attribute")
+                    return True
+        if 'noreturn' in token_str.lower() and '[[' in token_str and ']]' in token_str:
+            logger.debug(f"Detected [[noreturn]] attribute in documentation or naming")
+            return True
+            
+        return False
+
+
+# C++14 attribute detectors
+class DeprecatedAttributeDetector(FeatureDetector):
+    def __init__(self):
+        super().__init__("deprecated_attribute", "C++14", "[[deprecated(\"message\")]] compiler attribute")
+    
+    def detect(self, cursor, token_spellings, token_str, available_cursor_kinds):
+        # Check for [[deprecated]] attribute (with or without message)
+        if '[[' in token_spellings and 'deprecated' in token_spellings and ']]' in token_spellings:
+            # Check for proper sequence
+            for i in range(len(token_spellings) - 2):
+                if token_spellings[i] == '[[' and token_spellings[i+1] == 'deprecated':
+                    logger.debug(f"Detected [[deprecated]] attribute")
+                    return True
+                    
+        # Check for attribute in string context
+        if 'deprecated' in token_str.lower() and '[[' in token_str and ']]' in token_str:
+            logger.debug(f"Detected [[deprecated]] attribute in documentation or naming")
+            return True
+            
+        return False
+
+
+# C++17 attribute detectors
+class NodiscardMaybeUnusedAttributesDetector(FeatureDetector):
+    def __init__(self):
+        super().__init__("nodiscard_maybe_unused_attributes", "C++17", "[[nodiscard]], [[maybe_unused]] compiler attributes")
+    
+    def detect(self, cursor, token_spellings, token_str, available_cursor_kinds):
+        # Check for [[nodiscard]] or [[maybe_unused]] attributes
+        cpp17_attributes = ['nodiscard', 'maybe_unused']
+        for attr in cpp17_attributes:
+            if '[[' in token_spellings and attr in token_spellings and ']]' in token_spellings:
+                # Check for proper sequence
+                for i in range(len(token_spellings) - 2):
+                    if token_spellings[i] == '[[' and token_spellings[i+1] == attr and token_spellings[i+2] == ']]':
+                        logger.debug(f"Detected [[{attr}]] attribute")
+                        return True
+        
+        # Check for attribute in string context
+        if ('nodiscard' in token_str.lower() or 'maybe_unused' in token_str.lower()) and '[[' in token_str and ']]' in token_str:
+            logger.debug(f"Detected C++17 attribute in documentation or naming")
+            return True
+            
+        return False
+
+
+# C++20 attribute detectors
+class Cpp20AttributesDetector(FeatureDetector):
+    def __init__(self):
+        super().__init__("cpp20_attributes", "C++20", "[[likely]], [[unlikely]], [[no_unique_address]] compiler attributes")
+    
+    def detect(self, cursor, token_spellings, token_str, available_cursor_kinds):
+        # Check for C++20 attributes
+        cpp20_attributes = ['likely', 'unlikely', 'no_unique_address']
+        for attr in cpp20_attributes:
+            if '[[' in token_spellings and attr in token_spellings and ']]' in token_spellings:
+                # Check for proper sequence
+                for i in range(len(token_spellings) - 2):
+                    if token_spellings[i] == '[[' and token_spellings[i+1] == attr and token_spellings[i+2] == ']]':
+                        logger.debug(f"Detected [[{attr}]] attribute")
+                        return True
+        
+        # Check for attribute in string context
+        for attr in cpp20_attributes:
+            if attr in token_str.lower() and '[[' in token_str and ']]' in token_str:
+                logger.debug(f"Detected C++20 attribute in documentation or naming")
+                return True
+                
+        return False
+
+
+# C++23 attribute detectors are removed to maintain compatibility with older compilers       
