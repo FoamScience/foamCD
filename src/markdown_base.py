@@ -32,9 +32,30 @@ class MarkdownGeneratorBase:
             config_path: Optional path to configuration file
             config_object: Optional Config object (to avoid loading multiple times)
         """
-        self.db_path = db_path
-        self.output_path = output_path
-        self.project_dir = project_dir
+        if db_path:
+            if os.path.isabs(db_path):
+                self.db_path = db_path
+            else:
+                self.db_path = os.path.abspath(db_path)
+        else:
+            raise ValueError("Database path must be provided")
+        
+        if output_path:
+            if os.path.isabs(output_path):
+                self.output_path = output_path
+            else:
+                self.output_path = os.path.abspath(output_path)
+                logger.debug(f"Normalized relative output path to absolute: {self.output_path}")
+        else:
+            self.output_path = os.path.abspath('output')
+            logger.warning(f"No output path provided, using default: {self.output_path}")
+            
+        if project_dir and not os.path.isabs(project_dir):
+            self.project_dir = os.path.abspath(project_dir)
+            logger.debug(f"Normalized relative project_dir to absolute: {self.project_dir}")
+        else:
+            self.project_dir = project_dir
+            
         self.config_path = config_path
         self.config = config_object if config_object is not None else (Config(config_path) if config_path else None)
         self.db = EntityDatabase(db_path)
