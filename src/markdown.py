@@ -237,7 +237,49 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             with open(file_path, 'w') as f:
                 f.write(frontmatter.dumps(post))
             generated_count += 1
-        logger.info(f"Entity page generation complete: {generated_count} pages generated, {skipped_count} classes skipped")
+            
+        # Track valid entity filenames to check for stale files
+        valid_entity_filenames = set()
+        for entity in class_entities:
+            if not entity.get('name'):
+                continue
+            class_name = entity.get('name')
+            if re.match(r'add.*ConstructorToTable', class_name):
+                continue
+            namespace = ''
+            parent_uuid = entity.get('parent_uuid')
+            if parent_uuid:
+                try:
+                    namespace_db = EntityDatabase(self.db_path)
+                    namespace = namespace_db._get_namespace_path(parent_uuid)
+                finally:
+                    if 'namespace_db' in locals() and namespace_db and hasattr(namespace_db, 'conn') and namespace_db.conn:
+                        namespace_db.conn.close()
+            namespace_filename = namespace.replace('::', '_') if namespace else ''
+            if namespace_filename:
+                filename = f"{namespace_filename}_{class_name}.md"
+            else:
+                filename = f"{class_name}.md"
+            valid_entity_filenames.add(filename)
+        
+        # Now check for stale files that need to be removed
+        removed_count = 0
+        for filename in os.listdir(entities_dir):
+            if filename.endswith('.md') and filename not in valid_entity_filenames:
+                file_path = os.path.join(entities_dir, filename)
+                try:
+                    with open(file_path, 'r') as f:
+                        post = frontmatter.load(f)
+                    # Only remove if the file has foamCD frontmatter component
+                    if 'foamCD' in post and isinstance(post['foamCD'], dict):
+                        logger.info(f"Removing stale entity documentation: {filename}")
+                        os.remove(file_path)
+                        removed_count += 1
+                    else:
+                        logger.debug(f"Skipping non-foamCD markdown file: {filename}")
+                except Exception as e:
+                    logger.warning(f"Error checking stale entity file {filename}: {e}")
+        logger.info(f"Entity page generation complete: {generated_count} pages generated, {skipped_count} classes skipped, {removed_count} stale entity files removed")
     
     def generate_all(self):
         """Generate all markdown files based on configuration settings"""

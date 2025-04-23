@@ -33,13 +33,43 @@ class EntityDatabase:
     def _connect(self):
         """Connect to the SQLite database"""
         try:
+            if not self.db_path:
+                raise ValueError("Database path cannot be empty")
+            if not os.path.isabs(self.db_path):
+                orig_path = self.db_path
+                self.db_path = os.path.abspath(self.db_path)
+                logger.info(f"Normalized database path from {orig_path} to {self.db_path}")
+            db_exists = os.path.exists(self.db_path)
             self.conn = sqlite3.connect(self.db_path)
             self.conn.execute("PRAGMA foreign_keys = ON")
             self.conn.row_factory = sqlite3.Row
             self.cursor = self.conn.cursor()
-            logger.debug(f"Connected to database: {self.db_path}")
+            if db_exists:
+                self.cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table'")
+                table_count = self.cursor.fetchone()[0]
+                logger.debug(f"Database has {table_count} tables")
+                self.cursor.execute("SELECT count(*) FROM sqlite_master WHERE type='table' AND name='entities'")
+                if self.cursor.fetchone()[0] > 0:
+                    self.cursor.execute("SELECT count(*) FROM entities")
+                    entity_count = self.cursor.fetchone()[0]
+                    logger.debug(f"Database contains {entity_count} entities")
+            if db_exists:
+                self.cursor.execute("SELECT name FROM sqlite_master WHERE type='table' LIMIT 1")
+                self.cursor.fetchone()
+                
+            if db_exists:
+                logger.debug(f"Successfully opened existing database: {self.db_path}")
+            else:
+                logger.debug(f"Created new database: {self.db_path}")
         except sqlite3.Error as e:
             logger.error(f"Error connecting to database: {e}")
+            self.conn = None
+            self.cursor = None
+            raise
+        except Exception as e:
+            logger.error(f"Unexpected error working with database: {e}")
+            self.conn = None
+            self.cursor = None
             raise
     
     def commit(self):
@@ -934,7 +964,17 @@ class EntityDatabase:
         Returns:
             Entity dictionary or None if not found
         """
+        if not uuid:
+            logger.warning("Attempted to get entity with empty UUID")
+            return None
+            
         try:
+            # Make sure we have a valid database connection
+            if not self.conn or not self.cursor:
+                logger.warning(f"No database connection for get_entity. Reconnecting to {self.db_path}")
+                self._connect()
+                
+            # Query the entity
             self.cursor.execute('''
             SELECT * FROM entities WHERE uuid = ?
             ''', (uuid,))
@@ -946,14 +986,18 @@ class EntityDatabase:
             # Convert row to dictionary
             entity = dict(row)
             
-            # Get features
-            self.cursor.execute('''
-            SELECT f.name FROM features f
-            JOIN entity_features ef ON f.id = ef.feature_id
-            WHERE ef.entity_uuid = ?
-            ''', (uuid,))
-            features = [row[0] for row in self.cursor.fetchall()]
-            entity['cpp_features'] = features
+            # Get features - with better error handling
+            try:
+                self.cursor.execute('''
+                SELECT f.name FROM features f
+                JOIN entity_features ef ON f.id = ef.feature_id
+                WHERE ef.entity_uuid = ?
+                ''', (uuid,))
+                features = [row[0] for row in self.cursor.fetchall()]
+                entity['cpp_features'] = features
+            except Exception as e:
+                logger.warning(f"Error retrieving features for entity {uuid}: {e}")
+                entity['cpp_features'] = []
             
             # Get children
             self.cursor.execute('''
@@ -1076,13 +1120,21 @@ class EntityDatabase:
                 return self.get_entities_by_kind(kinds)
             project_dir = os.path.normpath(project_dir)
             logger.debug(f"Filtering entities by project directory: {project_dir}")
-            kinds_str = ', '.join([f"'{kind}'" for kind in kinds])
+            
+            # Create placeholders for each kind
+            placeholders = ', '.join(['?'] * len(kinds))
+            
+            # Safely construct the SQL query with parameter binding
             query = f"""
             SELECT uuid FROM entities 
-            WHERE kind IN ({kinds_str}) 
-            AND file LIKE '{project_dir}%' 
+            WHERE kind IN ({placeholders}) 
+            AND file LIKE ? || '%'
             """
-            self.cursor.execute(query)
+            
+            # Execute with parameters: first all kinds, then the project_dir
+            params = list(kinds) + [project_dir]
+            logger.debug(f"Executing query with params: {params}")
+            self.cursor.execute(query, params)
             
             entities = []
             for row in self.cursor.fetchall():
@@ -1090,7 +1142,7 @@ class EntityDatabase:
                 if entity:
                     entities.append(entity)
                     
-            logger.debug(f"Found {len(entities)} entities of kinds {kinds} in project directory {project_dir}")
+            logger.info(f"Found {len(entities)} entities of kinds {kinds} in project directory {project_dir}")
             return entities
         except Exception as e:
             import traceback

@@ -70,6 +70,11 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
             filename = self.index_frontmatter.get("filename")
             
         index_path = os.path.join(self.output_path, filename)
+        index_dir = os.path.dirname(index_path)
+        if not os.path.exists(index_dir):
+            logger.debug(f"Creating directory: {index_dir}")
+            os.makedirs(index_dir, exist_ok=True)
+            
         logger.info(f"Generating index file at {index_path}")
         standard_fields = ["title", "date", "description", "draft", "weight", "layout", "filename"]
         effective_project_dir = self.project_dir
