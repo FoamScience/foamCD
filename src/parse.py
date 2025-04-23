@@ -1041,6 +1041,7 @@ def main():
     
     if args.generate_config:
         Config.generate_default_config(args.generate_config)
+        logger = setup_logging()
         logger.info(f"Generated default configuration at {args.generate_config}")
         return 0
         
