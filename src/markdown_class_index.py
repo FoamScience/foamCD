@@ -166,6 +166,7 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
                             "definition_files": cls.get("definition_files", []),
                             "manual_entry_point": True  # Mark as manually added
                         }
+                        manual_entry = self._transform_nested_entity(manual_entry)
                         processed_rts_classes.append(manual_entry)
                         logger.debug(f"Added manual entry point: {cls.get('name')}")
                 else:

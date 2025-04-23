@@ -80,12 +80,13 @@ class MarkdownGeneratorBase:
             if 'classes' in frontmatter_config:
                 self.entity_frontmatter = frontmatter_config.get('classes')
     
-    def _transform_file_path(self, file_path: str, name: str = None) -> str:
+    def _transform_file_path(self, file_path: str, name: str = None, namespace: str = None) -> str:
         """Transform file paths to URLs based on dependency configuration
         
         Args:
             file_path: The original file path
             name: Optional name of the entity for template variables
+            namespace: Optional namespace of the entity for template variables
             
         Returns:
             Transformed file path or original path if no transformation applied
@@ -98,26 +99,87 @@ class MarkdownGeneratorBase:
         markdown_config = self.config.config.get('markdown', {})
         if not markdown_config:
             return file_path
+            
+        start_line = '1'
+        end_line = '1'
+        if '#' in file_path:
+            fragment = file_path.split('#')[1]
+            line_match = re.match(r'L(\d+)-L(\d+)', fragment)
+            if line_match:
+                start_line = line_match.group(1)
+                end_line = line_match.group(2)
+            elif 'L-L' in fragment:
+                logger.debug(f"Found empty line numbers in {file_path}, defaulting to #L1-L1")
+                
+        file_path_base = file_path.split('#')[0] if '#' in file_path else file_path
         dependencies = markdown_config.get('dependencies', [])
         if not dependencies:
             return file_path
+        project_dependency = None
+        if self.project_dir and file_path_base.startswith(self.project_dir):
+            for dependency in dependencies:
+                if 'path' in dependency and 'project_files' in dependency and dependency.get('project_files', False):
+                    for path_pattern in dependency.get('path', []):
+                        if file_path_base.startswith(path_pattern):
+                            logger.debug(f"Found project dependency match for {file_path_base}")
+                            project_dependency = dependency
+                            break
+                    if project_dependency:
+                        break
+        if project_dependency:
+            pattern = project_dependency.get('pattern', "{{dependency_url}}/{{file_path}}")
+            rel_path = get_relative_path_from_git_root(file_path_base)
+            if not rel_path and file_path_base:
+                if self.project_dir:
+                    rel_path = os.path.relpath(file_path_base, self.project_dir)
+                else:
+                    project_dir = Path(self.db.db_path).parent
+                    rel_path = os.path.relpath(file_path_base, project_dir)
+                    
+            context = {
+                'dependency_url': project_dependency.get('dependency_url', ''),
+                'name': name or Path(file_path_base).stem,
+                'file_path': rel_path,
+                'start_line': start_line,
+                'end_line': end_line,
+                'namespace': namespace.replace('::', '_') if namespace else '',
+                'project_name': markdown_config.get('project_name', ''),
+            }
+            try:
+                template = Template(pattern)
+                return template.render(**context)
+            except Exception as e:
+                logger.error(f"Error applying project dependency template: {e}")
+                
         for dependency in dependencies:
             if not 'path' in dependency or not 'dependency_url' in dependency:
                 continue
             path_matches = False
             for path_pattern in dependency.get('path', []):
-                if file_path.startswith(path_pattern):
+                if file_path_base.startswith(path_pattern):
                     path_matches = True
                     break
             if path_matches:
                 pattern = dependency.get('pattern', "{{dependency_url}}/{{name}}")
+                rel_path = get_relative_path_from_git_root(file_path_base)
+                if not rel_path and file_path_base:
+                    if self.project_dir:
+                        rel_path = os.path.relpath(file_path_base, self.project_dir)
+                    else:
+                        project_dir = Path(self.db.db_path).parent
+                        rel_path = os.path.relpath(file_path_base, project_dir)
+                        
                 context = {
                     'dependency_url': dependency.get('dependency_url', ''),
-                    'name': name or Path(file_path).stem,
-                    'file_path': file_path,
+                    'name': name or Path(file_path_base).stem,
+                    'file_path': rel_path,
+                    'full_path': file_path_base,
+                    'start_line': start_line,
+                    'end_line': end_line,
                     'project_name': markdown_config.get('project_name', ''),
                     'git_repository': markdown_config.get('git_repository', ''),
                     'git_reference': markdown_config.get('git_reference', 'main'),
+                    'namespace': namespace.replace('::', '_') if namespace else '',
                 }
                 try:
                     template = Template(pattern)
@@ -126,68 +188,6 @@ class MarkdownGeneratorBase:
                     logger.error(f"Error applying template to file path: {e}")
                     return file_path
         
-        git_repo = markdown_config.get('git_repository', None)
-        if not git_repo and file_path:
-            try:
-                file_dir = os.path.dirname(file_path.split('#')[0])
-                if is_git_repository(file_dir):
-                    git_repo = get_git_repo_url(file_dir)
-                    logger.debug(f"Auto-detected Git repository: {git_repo}")
-            except Exception as e:
-                logger.debug(f"Error auto-detecting Git repository: {e}")
-                
-        if git_repo:
-            start_line = '1'  # Default to line 1 if not specified
-            end_line = '1'    # Default to line 1 if not specified
-            if '#' in file_path:
-                fragment = file_path.split('#')[1]
-                line_match = re.match(r'L(\d+)-L(\d+)', fragment)
-                if line_match:
-                    start_line = line_match.group(1)
-                    end_line = line_match.group(2)
-                elif 'L-L' in fragment:
-                    logger.debug(f"Found empty line numbers in {file_path}, defaulting to #L1-L1")
-            repo_url = git_repo
-            if repo_url.endswith('.git'):
-                repo_url = repo_url[:-4]
-            
-            rel_path = get_relative_path_from_git_root(file_path.split('#')[0])
-            if not rel_path and file_path:
-                project_dir = Path(self.db.db_path).parent
-                rel_path = os.path.relpath(file_path.split('#')[0], project_dir)
-            git_ref = markdown_config.get('git_reference', None)
-            if not git_ref and file_path:
-                try:
-                    file_dir = os.path.dirname(file_path.split('#')[0])
-                    if is_git_repository(file_dir):
-                        git_ref = get_git_reference(file_dir)
-                        logger.debug(f"Auto-detected Git reference: {git_ref}")
-                except Exception as e:
-                    logger.debug(f"Error auto-detecting Git reference: {e}")
-            
-            if not git_ref:
-                git_ref = 'main' ## Dangerous? Too arbitrary?
-
-            internal_pattern = markdown_config.get('internal_linkage_pattern', None)
-            if internal_pattern:
-                context = {
-                    'git_repository': repo_url,
-                    'git_reference': git_ref,
-                    'file_path': rel_path,
-                    'start_line': start_line,
-                    'end_line': end_line,
-                    'name': name or Path(file_path).stem,
-                    'project_name': markdown_config.get('project_name', '')
-                }
-                
-                try:
-                    template = Template(internal_pattern)
-                    return template.render(**context)
-                except Exception as e:
-                    logger.error(f"Error applying internal linkage pattern: {e}")
-            line_fragment = f"#L{start_line}-L{end_line}"
-            return f"{repo_url}/blob/{git_ref}/{rel_path}{line_fragment}"
-            
         return file_path
     
     def _transform_uri(self, entity: Dict[str, Any]) -> str:
@@ -246,14 +246,15 @@ class MarkdownGeneratorBase:
         """
         result = entity.copy()
         name = result.get('name', '')
+        namespace = result.get('namespace', '')
         if 'file' in result:
-            result['file'] = self._transform_file_path(result['file'], name)
+            result['file'] = self._transform_file_path(result['file'], name, namespace)
         if 'declaration_file' in result:
-            result['declaration_file'] = self._transform_file_path(result['declaration_file'], name)
+            result['declaration_file'] = self._transform_file_path(result['declaration_file'], name, namespace)
         if 'definition_files' in result:
             transformed_def_files = []
             for def_file in result['definition_files']:
-                transformed_def_files.append(self._transform_file_path(def_file, name))
+                transformed_def_files.append(self._transform_file_path(def_file, name, namespace))
             result['definition_files'] = transformed_def_files
         if 'children' in result and isinstance(result['children'], list):
             transformed_children = []
