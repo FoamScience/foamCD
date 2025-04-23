@@ -118,13 +118,23 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         db = None
         class_entities = []
         try:
-            db = EntityDatabase(self.db_path)
+            db_path = self.db_path
+            if not os.path.isabs(db_path):
+                db_path = os.path.abspath(db_path)
+            logger.debug(f"Connecting to database at: {db_path}")
+            db = EntityDatabase(db_path)
+            entity_count = 0
+            try:
+                entity_count = len(db.get_all_entities())
+                logger.debug(f"Database contains {entity_count} total entities")
+            except Exception as e:
+                logger.warning(f"Error getting entity count: {e}")
             class_entities = db.get_entities_by_kind_in_project(
                 ['CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE'],
                 effective_project_dir
             )
             if class_entities:
-                logger.info(f"Database reports {len(class_entities)} classes")
+                logger.debug(f"Database reports {len(class_entities)} classes in total")
             else:
                 logger.warning("No classes found in database query")
                 class_entities = []
@@ -218,14 +228,31 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     with open(file_path, 'r') as f:
                         post = frontmatter.load(f)
                     content = post.content
+                    
+                    # Handle the foamCD section if it exists
                     if 'foamCD' in post and isinstance(post['foamCD'], dict):
                         existing_foamcd = post['foamCD']
                         if 'class_info' in existing_foamcd:
                             del existing_foamcd['class_info']
                         frontmatter_data['foamCD'].update(existing_foamcd)
-                    for key, value in post.items():
-                        if key != 'foamCD':
-                            frontmatter_data[key] = value
+                    
+                    try:
+                        for key, value in post.items():
+                            if key != 'foamCD' and key != 'content':
+                                frontmatter_data[key] = value
+                    except AttributeError:
+                        if hasattr(post, 'metadata') and isinstance(post.metadata, dict):
+                            for key, value in post.metadata.items():
+                                if key != 'foamCD':
+                                    frontmatter_data[key] = value
+                        else:
+                            for key in ['title', 'date', 'weight', 'draft', 'toc']:
+                                if hasattr(post, key) or (isinstance(post, dict) and key in post):
+                                    try:
+                                        frontmatter_data[key] = post[key]
+                                    except (TypeError, KeyError):
+                                        if hasattr(post, key):
+                                            frontmatter_data[key] = getattr(post, key)
                     logger.debug(f"Updating existing entity page: {filename}")
                 except Exception as e:
                     logger.warning(f"Error processing existing entity file {filename}: {e}")
@@ -279,6 +306,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         logger.debug(f"Skipping non-foamCD markdown file: {filename}")
                 except Exception as e:
                     logger.warning(f"Error checking stale entity file {filename}: {e}")
+        
         logger.info(f"Entity page generation complete: {generated_count} pages generated, {skipped_count} classes skipped, {removed_count} stale entity files removed")
     
     def generate_all(self):
@@ -1099,13 +1127,23 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if not unit_tests_enabled:
             logger.info(f"Unit test detection disabled in config for {class_name}")
             return []
+        # Get the main DB path either from the database object or config
         main_db_path = self.db.db_path
+        if not main_db_path and self.config:
+            main_db_path = self.config.get("database.path")
+            
         if not main_db_path:
+            logger.warning("Cannot determine main database path for unit tests")
             return []
+            
+        # Create a consistent name for the unit tests database
         project_name = os.path.splitext(os.path.basename(main_db_path))[0]
         unit_tests_db_path = os.path.join(os.path.dirname(main_db_path), f"{project_name}_unit_tests.db")
+        
         if not os.path.exists(unit_tests_db_path):
+            logger.info(f"Unit tests database not found at {unit_tests_db_path}, will create it")
             unit_tests_dir = self.config.get("markdown.frontmatter.entities.unit_tests_compile_commands_dir", None)
+            logger.info(f"Attempting to load unittests from {unit_tests_dir}")
             if not unit_tests_dir:
                 logger.info(f"No unit tests compile commands directory specified in config")
                 return []
@@ -1113,8 +1151,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             if not os.path.exists(compile_commands_path):
                 logger.warning(f"No compile_commands.json found at {compile_commands_path}")
                 return []
+                
             try:
                 logger.info(f"Creating unit tests database at {unit_tests_db_path} from {unit_tests_dir}")
+                
                 from config import Config
                 if self.config:
                     if self.config_path and os.path.exists(self.config_path):
@@ -1125,8 +1165,12 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     unit_tests_config = Config()
                 from omegaconf import OmegaConf
                 config_dict = OmegaConf.to_container(unit_tests_config.config)
+                
+                if 'parser' not in config_dict:
+                    config_dict['parser'] = {}
                 config_dict['parser']['compile_commands_dir'] = unit_tests_dir
-                config_dict['database'] = config_dict.get('database', {})
+                if 'database' not in config_dict:
+                    config_dict['database'] = {}
                 config_dict['database']['path'] = unit_tests_db_path
                 unit_tests_config.config = OmegaConf.create(config_dict)
                 from db import EntityDatabase
@@ -1647,8 +1691,40 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         Returns:
             List of contributor names
         """
-        # TODO: Implement proper Git contributor detection
-        return ["foamscience"]  # Placeholder
+        from git import get_file_authors_by_line_range, is_git_repository
+        
+        contributors = set()
+        file_path = entity.get('file')
+        
+        if not file_path or not os.path.exists(file_path):
+            file_path = entity.get('declaration_file')
+            if file_path and '#' in file_path:
+                file_path = file_path.split('#')[0]
+                
+        if not file_path or not os.path.exists(file_path) or not is_git_repository(os.path.dirname(file_path)):
+            return ["__unknown__"]
+            
+        start_line = entity.get('line') or entity.get('start_line')
+        end_line = entity.get('end_line') or start_line
+        if start_line and end_line and start_line != end_line:
+            authors_info = get_file_authors_by_line_range(file_path, start_line, end_line)
+            for author_info in authors_info:
+                if 'author' in author_info:
+                    contributors.add(author_info['author'])
+        else:
+            # Fallback - if line range is null or same, get all authors for the file
+            try:
+                with open(file_path, 'r') as f:
+                    num_lines = sum(1 for _ in f)
+                authors_info = get_file_authors_by_line_range(file_path, 1, num_lines)
+                for author_info in authors_info:
+                    if 'author' in author_info:
+                        contributors.add(author_info['author'])
+            except Exception as e:
+                logger.warning(f"Error getting file line count: {e}")
+                return ["__unknown__"]
+                
+        return list(contributors) if contributors else ["__unknown__"]
 
 
 def main():

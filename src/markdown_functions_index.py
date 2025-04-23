@@ -61,7 +61,18 @@ class FunctionsIndexGenerator(MarkdownGeneratorBase):
         filename = "functions.md"
         if self.functions_frontmatter and "filename" in self.functions_frontmatter:
             filename = self.functions_frontmatter.get("filename")
+        
+        if not self.output_path or self.output_path.strip() == '':
+            self.output_path = 'output'
+        if not os.path.isabs(self.output_path):
+            self.output_path = os.path.abspath(self.output_path)
+        if not os.path.exists(self.output_path):
+            os.makedirs(self.output_path, exist_ok=True)
         functions_path = os.path.join(self.output_path, filename)
+        functions_dir = os.path.dirname(functions_path)
+        if functions_dir and not os.path.exists(functions_dir):
+            os.makedirs(functions_dir, exist_ok=True)
+            
         logger.info(f"Generating functions file at {functions_path}")
         standard_fields = ["title", "date", "description", "draft", "weight", "layout", "filename"]
         compile_commands_dir = self.project_dir

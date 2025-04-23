@@ -35,7 +35,17 @@ class ConceptsIndexGenerator(MarkdownGeneratorBase):
         filename = "concepts.md"
         if self.concepts_frontmatter and "filename" in self.concepts_frontmatter:
             filename = self.concepts_frontmatter.get("filename")
+        if not self.output_path or self.output_path.strip() == '':
+            self.output_path = 'output'
+        if not os.path.isabs(self.output_path):
+            self.output_path = os.path.abspath(self.output_path)
+        if not os.path.exists(self.output_path):
+            os.makedirs(self.output_path, exist_ok=True)
         concepts_path = os.path.join(self.output_path, filename)
+        concepts_dir = os.path.dirname(concepts_path)
+        if concepts_dir and not os.path.exists(concepts_dir):
+            os.makedirs(concepts_dir, exist_ok=True)
+
         logger.info(f"Generating concepts file at {concepts_path}")
         standard_fields = ["title", "date", "description", "draft", "weight", "layout", "filename"]
         compile_commands_dir = self.project_dir

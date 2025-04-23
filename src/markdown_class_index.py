@@ -69,10 +69,17 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
         if self.index_frontmatter and "filename" in self.index_frontmatter:
             filename = self.index_frontmatter.get("filename")
             
+        # Not sure if this is strickly necessary, but here to allow
+        # for (atomic) standalone index creation
+        if not self.output_path or self.output_path.strip() == '':
+            self.output_path = 'output'
+        if not os.path.isabs(self.output_path):
+            self.output_path = os.path.abspath(self.output_path)
+        if not os.path.exists(self.output_path):
+            os.makedirs(self.output_path, exist_ok=True)
         index_path = os.path.join(self.output_path, filename)
         index_dir = os.path.dirname(index_path)
-        if not os.path.exists(index_dir):
-            logger.debug(f"Creating directory: {index_dir}")
+        if index_dir and not os.path.exists(index_dir):
             os.makedirs(index_dir, exist_ok=True)
             
         logger.info(f"Generating index file at {index_path}")
