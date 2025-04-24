@@ -405,9 +405,26 @@ class ClangParser:
         
     def _process_method_classification(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
         """Process C++ method classifications (virtual, override, etc.)"""
-        if cursor.kind != clang.cindex.CursorKind.CXX_METHOD:
+        if cursor.kind not in [clang.cindex.CursorKind.CXX_METHOD,
+                               clang.cindex.CursorKind.CONSTRUCTOR,
+                               clang.cindex.CursorKind.DESTRUCTOR]:
             return
             
+        if cursor.kind == clang.cindex.CursorKind.CXX_METHOD:
+            parent_cursor = cursor.semantic_parent
+            if parent_cursor and parent_cursor.kind in [clang.cindex.CursorKind.CLASS_DECL,
+                                                        clang.cindex.CursorKind.STRUCT_DECL, 
+                                                        clang.cindex.CursorKind.CLASS_TEMPLATE]:
+                parent_name = parent_cursor.spelling
+                method_name = cursor.spelling
+                if method_name == parent_name:
+                    entity.kind = clang.cindex.CursorKind.CONSTRUCTOR
+                    logger.debug(f"Identified method '{method_name}' as a constructor of class '{parent_name}'")
+                    return
+                elif method_name == f"~{parent_name}":
+                    entity.kind = clang.cindex.CursorKind.DESTRUCTOR
+                    logger.debug(f"Identified method '{method_name}' as a destructor of class '{parent_name}'")
+                    return
         entity.is_virtual = cursor.is_virtual_method()
         entity.is_pure_virtual = cursor.is_pure_virtual_method()
         try:

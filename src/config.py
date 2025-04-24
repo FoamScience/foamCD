@@ -16,9 +16,7 @@ DEFAULT_CONFIG = {
         "git_repository": None,    # Root git folder, auto-sensed if None
         "git_reference": None,     # Active git reference, priority: tags -> branches -> commit
         "output_path": "markdown_docs", # Where to write the Markdown files, can have files already there
-        "classes_doc_uri": "/api/classes/{{namespace}}_{{name}}", # URI for a class
-        "concepts_doc_uri": "/api/concepts/{{namespace}}_{{name}}", # URI for a contept, NOT YET ACTIVE
-        "internal_linkage_pattern": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}", # Linking to file inside the project
+        "doc_uri": "/api/{{namespace}}_{{name}}", # URI for entities docs
         "dependencies": [ # List of external dependencies, NOT YET ACTIVE
             {
                 "path": [ # Paths to consider as depencies
