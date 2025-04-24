@@ -143,6 +143,8 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
                 if "definition_files" in entity and entity["definition_files"]:
                     filtered_entity["definition_files"] = entity["definition_files"]
                 processed_entity = self._transform_nested_entity(filtered_entity)
+                if 'name' in processed_entity and 'namespace' in processed_entity:
+                    processed_entity['uri'] = self._transform_uri(processed_entity)
                 processed_rts_classes.append(processed_entity)
         
         manual_entry_points = []
@@ -167,6 +169,8 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
                             "manual_entry_point": True  # Mark as manually added
                         }
                         manual_entry = self._transform_nested_entity(manual_entry)
+                        if 'name' in manual_entry and 'namespace' in manual_entry:
+                            manual_entry['uri'] = self._transform_uri(manual_entry)
                         processed_rts_classes.append(manual_entry)
                         logger.debug(f"Added manual entry point: {cls.get('name')}")
                 else:
@@ -174,6 +178,8 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
                         "name": class_name,
                         "manual_entry_point": True
                     }
+                    # TODO: Fix URI of manual entries
+                    manual_entry['uri'] = f"/api/classes/{class_name}"
                     processed_rts_classes.append(manual_entry)
                     logger.debug(f"Added placeholder for manual entry point: {class_name}")
         

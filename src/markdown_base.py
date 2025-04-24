@@ -205,18 +205,19 @@ class MarkdownGeneratorBase:
         entity_kind = entity.get('kind', '')
         uri_template = None
         
+        # TODO: For now, classes/concepts URI don't really differ...
         if entity_kind == 'CONCEPT_DECL':
-            uri_template = markdown_config.get('concepts_doc_uri')
-            if not uri_template and 'classes_doc_uri' not in markdown_config:
+            uri_template = markdown_config.get('doc_uri')
+            if not uri_template and 'doc_uri' not in markdown_config:
                 name = entity.get('name', '')
                 namespace = entity.get('namespace', '')
-                return f"/api/concepts/{namespace.replace('::', '_')}_{name}"
+                return f"/api/{namespace.replace('::', '_')}_{name}"
         else:
-            uri_template = markdown_config.get('classes_doc_uri')
+            uri_template = markdown_config.get('doc_uri')
             if not uri_template:
                 name = entity.get('name', '')
                 namespace = entity.get('namespace', '')
-                return f"/api/classes/{namespace.replace('::', '_')}_{name}"
+                return f"/api/{namespace.replace('::', '_')}_{name}"
         
         try:
             context = {

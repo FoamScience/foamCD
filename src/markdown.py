@@ -383,6 +383,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         """
         method_info = method_entity.get("method_info", {})
         name = method_entity.get("name", "")
+        parent_name = method_entity.get("parent_name", "")
+        is_constructor = (name == parent_name) or method_entity.get("kind", "") in ["CONSTRUCTOR", "CXX_CONSTRUCTOR"]
+        is_destructor = (name == f"~{parent_name}") or method_entity.get("kind", "") in ["DESTRUCTOR", "CXX_DESTRUCTOR"]
         parameters = []
         for param in method_entity.get("parameters", []):
             param_info = {
@@ -401,8 +404,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             decorations.append("deprecated")
         access = method_entity.get("access_specifier", "public").lower()
         qualifiers = []
-        result_type = method_entity.get("result_type", "void")
-        method_info = method_entity.get("method_info", {})
+        if is_constructor or is_destructor:
+            result_type = None
+        else:
+            result_type = method_entity.get("result_type", None)
         is_static = method_info.get("is_static", False)
         if is_static:
             qualifiers.append("static")
@@ -414,22 +419,22 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             qualifiers.append("constexpr")
         if method_entity.get("is_inline", False):
             qualifiers.append("inline")
+            
         signature_parts = []
         if qualifiers:
             signature_parts.append(' '.join(qualifiers))
-        if not (name == method_entity.get("parent_name", "") or 
-                name == f"~{method_entity.get('parent_name', '')}"):
+            
+        if not (is_constructor or is_destructor):
             signature_parts.append(result_type)
         signature = ' '.join(signature_parts) + (' ' if signature_parts else '')
         signature += name
+        
         if parameters:
             param_strings = [f"{p.get('type', '')} {p.get('name', '')}" for p in parameters]
             signature += f"({', '.join(param_strings)})"
         else:
             signature += "()"
-        if method_info.get("is_const", False):
-            signature += " const"
-        signature = f"{access} {' '.join(qualifiers)} {result_type} {name}({', '.join([f'{p.get("type", "")} {p.get("name", "")}' for p in parameters])})"
+            
         if method_info.get("is_const", False):
             signature += " const"
         if method_entity.get("is_noexcept", False):
@@ -478,6 +483,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "signature": signature.strip(),
             "parameters": parameters,
             "return_type": result_type,
+            "is_constructor": is_constructor,
+            "is_destructor": is_destructor,
             "decorations": decorations,
             "access_specifier": method_entity.get("access_specifier", "public").lower()
         }
