@@ -95,14 +95,7 @@ class EntityDatabase:
                 access TEXT,
                 type_info TEXT,
                 full_signature TEXT,
-                is_virtual INTEGER,
-                is_pure_virtual INTEGER,
-                is_override INTEGER,
-                is_final INTEGER,
-                is_static INTEGER,
                 is_abstract INTEGER,
-                is_defaulted INTEGER,
-                is_deleted INTEGER,
                 linkage TEXT,
                 is_external_reference INTEGER,
                 FOREIGN KEY (parent_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
@@ -864,11 +857,10 @@ class EntityDatabase:
             self.cursor.execute('''
             INSERT OR REPLACE INTO entities 
             (uuid, name, kind, file, line, end_line, column, end_column, parent_uuid, 
-             doc_comment, access, type_info, full_signature, is_virtual, is_pure_virtual, 
-             is_override, is_final, is_static, is_abstract, is_defaulted, is_deleted, linkage, is_external_reference)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             doc_comment, access, type_info, full_signature, is_abstract, linkage, is_external_reference)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (uuid, name, kind, file_path, line, end_line, column, end_column, parent_uuid, 
-                  doc_comment, access_level, type_info, full_signature, 0, 0, 0, 0, 0, 0, 0, 0, None, 0))
+                  doc_comment, access_level, type_info, full_signature, 0, None, 0))
             
             # Store method classification if present
             method_info = entity.get('method_info', {})

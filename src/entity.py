@@ -178,7 +178,8 @@ class Entity:
         }
         if self.base_classes:
             result['base_classes'] = self.base_classes
-        if self.kind in (CursorKind.CXX_METHOD, CursorKind.FUNCTION_DECL, CursorKind.FUNCTION_TEMPLATE):
+        if self.kind in (CursorKind.CXX_METHOD, CursorKind.FUNCTION_DECL, CursorKind.FUNCTION_TEMPLATE, 
+                       CursorKind.CONSTRUCTOR, CursorKind.DESTRUCTOR):
             result['method_info'] = {
                 'is_virtual': self.is_virtual,
                 'is_pure_virtual': self.is_pure_virtual,

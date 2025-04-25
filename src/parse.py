@@ -420,11 +420,9 @@ class ClangParser:
                 if method_name == parent_name:
                     entity.kind = clang.cindex.CursorKind.CONSTRUCTOR
                     logger.debug(f"Identified method '{method_name}' as a constructor of class '{parent_name}'")
-                    return
                 elif method_name == f"~{parent_name}":
                     entity.kind = clang.cindex.CursorKind.DESTRUCTOR
                     logger.debug(f"Identified method '{method_name}' as a destructor of class '{parent_name}'")
-                    return
         entity.is_virtual = cursor.is_virtual_method()
         entity.is_pure_virtual = cursor.is_pure_virtual_method()
         try:
@@ -444,17 +442,11 @@ class ClangParser:
         try:
             entity.is_static = cursor.storage_class == clang.cindex.StorageClass.STATIC
         except AttributeError:
-            entity.is_static = any(t.spelling == 'static' for t in tokens)
+            entity.is_static = any(t.spelling == 'static' for t in token_spellings)
+
+        entity.is_defaulted = cursor.is_default_method()
+        entity.is_deleted = cursor.is_default_method()
         
-        if '=' in token_spellings:
-            equal_index = token_spellings.index('=')
-            if equal_index < len(token_spellings) - 1:
-                next_token = token_spellings[equal_index + 1]
-                if next_token == 'default':
-                    entity.is_defaulted = True
-                elif next_token == 'delete':
-                    entity.is_deleted = True
-    
     def _process_class_features(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
         """Process class-specific features (inheritance, abstract classification)"""
         if cursor.kind not in (clang.cindex.CursorKind.CLASS_DECL, 
