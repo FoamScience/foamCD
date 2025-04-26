@@ -79,7 +79,13 @@ class MarkdownGeneratorBase:
             if 'classes' in frontmatter_config:
                 self.entity_frontmatter = frontmatter_config.get('classes')
     
-    def _transform_file_path(self, file_path: str, name: str = None, namespace: str = None) -> str:
+    def _transform_file_path(self,
+            file_path: str,
+            name: str = None,
+            namespace: str = None,
+            template_pattern: str="doc_uri",
+            entity: Dict[str, Any]={}
+        ) -> str:
         """Transform file paths to URLs based on dependency configuration
         
         Args:
@@ -113,7 +119,11 @@ class MarkdownGeneratorBase:
             'namespace': namespace.replace('::', '_') if namespace else None,
             'project_name': None, 
             'project_dir': None,
+            'parent_name': None,
         }
+
+        if template_pattern == "method_doc_uri":
+            context['parent_name'] = self.db.get_entity_by_uuid(entity['parent_uuid'], False)['name']
 
         # Line range
         start_line = '1'
@@ -144,11 +154,11 @@ class MarkdownGeneratorBase:
             context['project_dir'] = self.project_dir
             context['project_name'] = markdown_config.get('project_name', '')
             try:
-                pattern = markdown_config.get('doc_uri', '{{ full_path }}#L{{ start_line }}-L{{ end_line }}')
+                pattern = markdown_config.get(template_pattern, '{{ full_path }}#L{{ start_line }}-L{{ end_line }}')
                 template = Template(pattern)
                 return template.render(**context), context
             except Exception as e:
-                logger.error(f"Error applying doc_uri template: {e}")
+                logger.error(f"Error applying {template_pattern} template: {e}")
                 raise
             
         url_mappings = markdown_config.get('url_mappings', [])

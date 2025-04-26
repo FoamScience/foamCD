@@ -20,6 +20,7 @@ DEFAULT_CONFIG = {
         # Possible context for doc_uri: name, namespace, start_line, end_line, base_url, file_path, full_path,
         # git_reference, git_repository, project_name, project_dir
         "doc_uri": "/api/{{namespace}}_{{name}}", # URI for entities docs
+        "methoddoc_uri": "/api/{{namespace}}_{{parent_name}}", # URI for entities docs
         "url_mapping": [ # List of external dependencies, NOT YET ACTIVE
             {
                 "path": [ # Paths to consider as depencies

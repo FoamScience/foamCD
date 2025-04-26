@@ -530,7 +530,11 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             end_line = method_entity.get("end_line") or method_entity.get("line")
             if line and end_line:
                 file_path = f"{file_path}#L{line}-L{end_line}"
-            transformed_path, _ = self._transform_file_path(file_path, name)
+            namespace = method_entity.get("namespace")
+            transformed_path, _ = self._transform_file_path(file_path, name,
+                                                            namespace,
+                                                            template_pattern="method_doc_uri",
+                                                            entity=method_entity)
             formatted_info["definition_file"] = transformed_path
             
         return formatted_info
@@ -910,7 +914,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                             processed_methods.add(method_name)
                             impl_info = self._format_method_info(impl)
                             base_file = base_entity.get("file", "")
-                            transformed_file, _ = self._transform_file_path(base_file, base_name, base_entity.get("namespace", ""))
+                            transformed_file, _ = self._transform_file_path(base_file, base_name,
+                                                                            base_entity.get("namespace", ""),
+                                                                            template_pattern="method_doc_uri",
+                                                                            entity=base_entity)
                             
                             impl_info["implements_abstract_from"] = {
                                 "class_name": base_name,
