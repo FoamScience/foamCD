@@ -204,6 +204,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 "foamCD": {
                     "filename": self._get_entity_filename(entity),
                     "namespace": namespace,
+                    "signature": entity.get("full_signature", ""),
                     "ctors": self._get_entity_constructors(entity),
                     "factory_methods": self._get_entity_factory_methods(entity),
                     "dtor": self._get_entity_destructor(entity),
@@ -1437,7 +1438,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 for row in self.db.cursor.fetchall():
                     feature_name = row[0]
                     if feature_name:
-                        requirements.add(feature_name)
+                        if feature_name == "openfoam":
+                            requirements.add("openfoam_basics")
+                        else:
+                            requirements.add(feature_name)
                 logger.debug(f"Found {len(requirements)} features for class {entity.get('name')} from database")
                 methods = []
                 methods.extend(entity.get("methods", []))
@@ -1481,16 +1485,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         # Check for RTS usage
         custom_fields = entity.get("custom_fields", {})
         rts_tables = []
-        for i in range(1, 10):
-            rts_name = custom_fields.get(f"openfoam_rts_name_{i}")
-            if rts_name:
-                rts_tables.append(rts_name)
-        if rts_tables:
+        if custom_fields.get("openfoam_rts_count", 0) > 0:
+            rts_tables = custom_fields.get("openfoam_rts_names").split('|')
             requirements.add("openfoam_rts")
-            if entity.get("name") in rts_tables:
-                requirements.add("openfoam_rts_base")
-            else:
-                requirements.add("openfoam_rts_derived")
         return sorted(list(requirements))
         
     def _get_entity_protected_bases(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:

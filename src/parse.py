@@ -372,7 +372,10 @@ class ClangParser:
             clang.cindex.CursorKind.CXX_METHOD,
             clang.cindex.CursorKind.CONSTRUCTOR,
             clang.cindex.CursorKind.DESTRUCTOR,
-            clang.cindex.CursorKind.CONCEPT_DECL
+            clang.cindex.CursorKind.CONCEPT_DECL,
+            clang.cindex.CursorKind.CLASS_DECL,
+            clang.cindex.CursorKind.STRUCT_DECL,
+            clang.cindex.CursorKind.CLASS_TEMPLATE
         ]:
             tokens = list(cursor.get_tokens())
             if tokens:
