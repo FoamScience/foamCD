@@ -85,6 +85,7 @@ class EntityDatabase:
                 uuid TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 kind TEXT NOT NULL,
+                namespace TEXT,
                 file TEXT,
                 line INTEGER,
                 end_line INTEGER,
@@ -854,12 +855,13 @@ class EntityDatabase:
             full_signature = entity.get('full_signature', None)
             
             # Insert entity with all fields
+            namespace = entity.get('namespace', None)
             self.cursor.execute('''
             INSERT OR REPLACE INTO entities 
-            (uuid, name, kind, file, line, end_line, column, end_column, parent_uuid, 
+            (uuid, name, kind, namespace, file, line, end_line, column, end_column, parent_uuid, 
              doc_comment, access, type_info, full_signature, is_abstract, linkage, is_external_reference)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''', (uuid, name, kind, file_path, line, end_line, column, end_column, parent_uuid, 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (uuid, name, kind, namespace, file_path, line, end_line, column, end_column, parent_uuid, 
                   doc_comment, access_level, type_info, full_signature, 0, None, 0))
             
             # Store method classification if present
@@ -1403,7 +1405,7 @@ class EntityDatabase:
                 def_files = self._get_definition_files(class_uuid)
                 if decl_file and def_files:
                     def_files = [f for f in def_files if os.path.realpath(f) != os.path.realpath(decl_file)]
-                uri = f"/api/{namespace.replace('::', '_')}_{class_name}"
+                uri = None # f"/api/{namespace.replace('::', '_')}_{class_name}"
                 class_info = {
                     "uuid": class_uuid,
                     "name": class_name,

@@ -19,6 +19,7 @@ class Entity:
         self.linkage = None
         self.type_info = None
         self.full_signature = None
+        self.namespace = None
         self.cpp_features: Set[str] = set()
         
         # Inheritance tracking
@@ -161,6 +162,7 @@ class Entity:
             'kind': self.kind.name if hasattr(self.kind, 'name') else str(self.kind),
             # Include parent_uuid explicitly to ensure parent-child relationships are preserved
             'parent_uuid': self.parent.uuid if self.parent else None,
+            'namespace': self.namespace,
             'location': {
                 'file': self.file,
                 'line': self.line,

@@ -8,6 +8,7 @@ import re
 from typing import Dict, List, Any, Optional
 import frontmatter
 from datetime import datetime
+from jinja2 import Template
 
 from logs import setup_logging
 from db import EntityDatabase
@@ -56,7 +57,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             name = entity_copy.get("name", "")
             try:
                 file_path = entity_copy["file"]
-                transformed_path = self._transform_file_path(file_path, name)
+                transformed_path, _ = self._transform_file_path(file_path, name)
                 entity_copy["file"] = transformed_path
             except Exception as e:
                 logger.warning(f"Error transforming file path: {e}")
@@ -70,7 +71,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     if line and end_line:
                         decl_file = f"{decl_file}#L{line}-L{end_line}"
                         logger.debug(f"Added line numbers to declaration file: {decl_file}")
-                transformed_path = self._transform_file_path(decl_file, name)
+                transformed_path, _ = self._transform_file_path(decl_file, name)
                 entity_copy['declaration_file'] = transformed_path
             except Exception as e:
                 logger.warning(f"Error transforming declaration file path: {e}")
@@ -80,7 +81,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             try:
                 transformed_defs = []
                 for def_file in entity_copy['definition_files']:
-                    transformed_def = self._transform_file_path(def_file, name)
+                    transformed_def, _ = self._transform_file_path(def_file, name)
                     transformed_defs.append(transformed_def)
                 entity_copy['definition_files'] = transformed_defs
             except Exception as e:
@@ -95,15 +96,15 @@ class MarkdownGenerator(MarkdownGeneratorBase):
     def generate_entity_pages(self):
         """Generate individual markdown pages for each class in the project_dir
         
-        Creates an entities/ subdirectory in the output path and generates a file for each class
+        Generates a file for each class directly in the output path
         with filename format: {{namespace}}_{{className}}.md
         If a file already exists, its content is preserved and only the frontmatter is updated.
         """
-        entities_dir = os.path.join(self.output_path, "entities")
-        if not os.path.exists(entities_dir):
-            os.makedirs(entities_dir)
+        # Ensure output directory exists
+        if not os.path.exists(self.output_path):
+            os.makedirs(self.output_path)
             
-        logger.info(f"Generating entity pages in {entities_dir}")
+        logger.info(f"Generating entity pages in {self.output_path}")
         effective_project_dir = self.project_dir
         if not effective_project_dir and self.config:
             compile_commands_dir = self.config.get("parser.compile_commands_dir")
@@ -181,17 +182,23 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             else:
                 filename = f"{class_name}.md"
                 
-            file_path = os.path.join(entities_dir, filename)
+            protected_files = ['_index.md', 'functions.md', 'concepts.md']
+            if filename in protected_files:
+                logger.warning(f"Skipping generation of {filename} as it is a protected file")
+                skipped_count += 1
+                continue
+                
+            file_path = os.path.join(self.output_path, filename)
             frontmatter_data = {
                 "title": class_name,
-                "url": f"/api/entities/{namespace.replace('::', '_')}_{class_name}" if namespace else f"/api/entities/{class_name}",
+                "url": self._get_entity_url(entity),
                 "layout": "class",
-                "weight": 3,
+                "weight": 20,
                 "date": datetime.now().strftime("%Y-%m-%d"),
                 "description": entity.get("doc_comment", "") or f"API documentation for {class_name}",
                 "categories": [
                     "api",
-                    f"{self.config.get('markdown.project_name')}_api"
+                    f"{self.config.get('markdown.project_name')} API"
                 ],
                 "api_tags": self._get_entity_api_tags(entity),
                 "foamCD": {
@@ -291,9 +298,15 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         
         # Now check for stale files that need to be removed
         removed_count = 0
-        for filename in os.listdir(entities_dir):
-            if filename.endswith('.md') and filename not in valid_entity_filenames:
-                file_path = os.path.join(entities_dir, filename)
+        protected_files = ['_index.md', 'functions.md', 'concepts.md']
+        for filename in os.listdir(self.output_path):
+            # Skip protected files and non-markdown files
+            if not filename.endswith('.md') or filename in protected_files:
+                continue
+                
+            # Only remove files that were previously generated by this system but are no longer valid
+            if filename not in valid_entity_filenames:
+                file_path = os.path.join(self.output_path, filename)
                 try:
                     with open(file_path, 'r') as f:
                         post = frontmatter.load(f)
@@ -367,11 +380,32 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             if start_line and end_line:
                 file_path = f"{file_path}#L{start_line}-L{end_line}"
                 logger.debug(f"Added line numbers to file path: {file_path}")
-            transformed_path = self._transform_file_path(file_path, name)
+            transformed_path, _ = self._transform_file_path(file_path, name)
             return transformed_path
             
         return "unknown.H"  # Placeholder
         
+    def _get_entity_url(self, entity: Dict[str, Any]) -> str:
+        """Get the URL for an entity, transformed via templates.
+        For now, only handles classes/structs.
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            Entity URL
+        """
+        if entity.get("kind") not in ['CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE']:
+            return None
+        pattern = self.config.get('markdown.doc_uri')
+        _, context = self._transform_file_path(entity['file'], entity['name'], entity['namespace'])
+        try:
+            template = Template(pattern)
+            return template.render(**context)
+        except Exception as e:
+            logger.error(f"Error applying doc_uri template: {e}")
+            raise
+
     def _format_method_info(self, method_entity: Dict[str, Any]) -> Dict[str, Any]:
         """Format method information for use in frontmatter
         
@@ -393,21 +427,12 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 "type": param.get("type", "")
             }
             parameters.append(param_info)
-        decorations = []
-        if method_info.get("is_defaulted", False):
-            decorations.append("defaulted")
-        if method_info.get("is_deleted", False):
-            decorations.append("deleted")
-        if method_entity.get("is_noexcept", False):
-            decorations.append("noexcept")
-        if method_entity.get("is_deprecated", False):
-            decorations.append("deprecated")
         access = method_entity.get("access_specifier", "public").lower()
         qualifiers = []
         if is_constructor or is_destructor:
             result_type = None
         else:
-            result_type = method_entity.get("result_type", None)
+            result_type = method_entity.get("result_type", "void")
         is_static = method_info.get("is_static", False)
         if is_static:
             qualifiers.append("static")
@@ -424,7 +449,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if qualifiers:
             signature_parts.append(' '.join(qualifiers))
             
-        if not (is_constructor or is_destructor):
+        # Only include return type for non-constructor/destructor methods
+        if not (is_constructor or is_destructor) and result_type is not None:
             signature_parts.append(result_type)
         signature = ' '.join(signature_parts) + (' ' if signature_parts else '')
         signature += name
@@ -485,7 +511,16 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "return_type": result_type,
             "is_constructor": is_constructor,
             "is_destructor": is_destructor,
-            "decorations": decorations,
+            "is_virtual": method_info.get("is_virtual", False),
+            "is_pure_virtual": method_info.get("is_pure_virtual", False),
+            "is_override": method_info.get("is_override", False),
+            "is_final": method_info.get("is_final", False),
+            "is_static": method_info.get("is_static", False),
+            "is_defaulted": method_info.get("is_defaulted", False),
+            "is_deleted": method_info.get("is_deleted", False),
+            "is_const": method_info.get("is_const", False),
+            "is_noexcept": method_entity.get("is_noexcept", False),
+            "is_deprecated": method_entity.get("is_deprecated", False),
             "access_specifier": method_entity.get("access_specifier", "public").lower()
         }
         
@@ -495,7 +530,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             end_line = method_entity.get("end_line") or method_entity.get("line")
             if line and end_line:
                 file_path = f"{file_path}#L{line}-L{end_line}"
-            transformed_path = self._transform_file_path(file_path, name)
+            transformed_path, _ = self._transform_file_path(file_path, name)
             formatted_info["definition_file"] = transformed_path
             
         return formatted_info
@@ -679,7 +714,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if not entity_uuid:
             return result
         query = """
-        SELECT e.uuid, e.name, bcl.direct, bcl.depth 
+        SELECT e.uuid, e.name, e.namespace, bcl.direct, bcl.depth 
         FROM entities e
         JOIN base_child_links bcl ON e.uuid = bcl.base_uuid
         WHERE bcl.child_uuid = ? AND bcl.access_level = 'PUBLIC'
@@ -691,8 +726,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             for row in self.db.cursor.fetchall():
                 base_uuid = row[0]
                 base_name = row[1]
-                is_direct = bool(row[2])
-                depth = row[3]
+                base_namespace = row[2]
+                is_direct = bool(row[3])
+                depth = row[4]
                 base_entity = self.db.get_entity_by_uuid(base_uuid)
                 if not base_entity:
                     continue
@@ -720,6 +756,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         public_methods.append(new_entry)
                 base_info = {
                     "name": base_name,
+                    "namespace": base_namespace,
                     "uuid": base_uuid,
                     "is_direct": is_direct,
                     "depth": depth,
@@ -872,11 +909,15 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         for impl in class_methods[method_name]:
                             processed_methods.add(method_name)
                             impl_info = self._format_method_info(impl)
+                            base_file = base_entity.get("file", "")
+                            transformed_file, _ = self._transform_file_path(base_file, base_name, base_entity.get("namespace", ""))
+                            
                             impl_info["implements_abstract_from"] = {
                                 "class_name": base_name,
                                 "class_uuid": base_uuid,
-                                "access_level": access_level,
-                                "abstract_method": self._format_method_info(child)
+                                "namespace": base_entity.get("namespace", ""),
+                                "definition_file": transformed_file,
+                                "access_level": access_level.lower(),
                             }
                             method_entry = None
                             for entry in implemented_abstract_methods:
@@ -1345,7 +1386,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     if test_line and test_end_line:
                         if '#' not in file_with_lines:
                             file_with_lines = f"{file_with_lines}#L{test_line}-L{test_end_line}"
-                    transformed_file = self._transform_file_path(file_with_lines, test_name)
+                    transformed_file, _ = self._transform_file_path(file_with_lines, test_name)
                     test_entry = {
                         "name": description if description else test_name,
                         "file": transformed_file,
@@ -1463,7 +1504,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if not entity_uuid:
             return result
         query = """
-        SELECT e.uuid, e.name, bcl.direct, bcl.depth 
+        SELECT e.uuid, e.name, e.namespace, bcl.direct, bcl.depth 
         FROM entities e
         JOIN base_child_links bcl ON e.uuid = bcl.base_uuid
         WHERE bcl.child_uuid = ? AND bcl.access_level = 'PROTECTED'
@@ -1475,8 +1516,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             for row in self.db.cursor.fetchall():
                 base_uuid = row[0]
                 base_name = row[1]
-                is_direct = bool(row[2])
-                depth = row[3]
+                base_namespace = row[2]
+                is_direct = bool(row[3])
+                depth = row[4]
                 base_entity = self.db.get_entity_by_uuid(base_uuid)
                 if not base_entity:
                     continue
@@ -1504,6 +1546,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         protected_methods.append(new_entry)
                 base_info = {
                     "name": base_name,
+                    "namespace": base_namespace,
                     "uuid": base_uuid,
                     "is_direct": is_direct,
                     "depth": depth,
@@ -1576,7 +1619,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if not entity_uuid:
             return result
         query = """
-        SELECT e.uuid, e.name, bcl.direct, bcl.depth 
+        SELECT e.uuid, e.name, e.namespace, bcl.direct, bcl.depth 
         FROM entities e
         JOIN base_child_links bcl ON e.uuid = bcl.base_uuid
         WHERE bcl.child_uuid = ? AND bcl.access_level = 'PRIVATE'
@@ -1588,8 +1631,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             for row in self.db.cursor.fetchall():
                 base_uuid = row[0]
                 base_name = row[1]
-                is_direct = bool(row[2])
-                depth = row[3]
+                base_namespace = row[2]
+                is_direct = bool(row[3])
+                depth = row[4]
                 base_entity = self.db.get_entity_by_uuid(base_uuid)
                 if not base_entity:
                     continue
@@ -1615,6 +1659,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         private_methods.append(new_entry)
                 base_info = {
                     "name": base_name,
+                    "namespace": base_namespace,
                     "uuid": base_uuid,
                     "is_direct": is_direct,
                     "depth": depth,

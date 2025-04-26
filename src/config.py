@@ -13,18 +13,25 @@ logger = setup_logging()
 DEFAULT_CONFIG = {
     "markdown": {
         "project_name": "My lib",  # Official project name
+        "project_base_url": None,  # Leading URL section for project files, leave empty to let Hugo figure things out on its own
         "git_repository": None,    # Root git folder, auto-sensed if None
         "git_reference": None,     # Active git reference, priority: tags -> branches -> commit
         "output_path": "markdown_docs", # Where to write the Markdown files, can have files already there
+        # Possible context for doc_uri: name, namespace, start_line, end_line, base_url, file_path, full_path,
+        # git_reference, git_repository, project_name, project_dir
         "doc_uri": "/api/{{namespace}}_{{name}}", # URI for entities docs
-        "dependencies": [ # List of external dependencies, NOT YET ACTIVE
+        "url_mapping": [ # List of external dependencies, NOT YET ACTIVE
             {
                 "path": [ # Paths to consider as depencies
                     "/usr/include",
                     "/usr/include/x86_64-linux-gnu",
                 ],
-                "dependency_url": "https://devdocs.io/cpp", # the root URI for this dependency, to docs or to code
-                "pattern": "{{dependency_url}}/{{name}}",   # Jinja2 template to refer to dependency
+                "base_url": "https://devdocs.io/cpp", # the root URI for this dependency, to docs or to code
+                # Possible context for pattern: name, namespace, start_line, end_line, base_url, file_path, full_path,
+                # git_reference, git_repository, project_name, project_dir
+                # These are all specific to each dependency project.
+                "pattern": "{{base_url}}/{{name}}",   # Jinja2 template to refer to dependency
+                "project_name": "System Libs",        # Optional dependency project name
             },
         ],
         "frontmatter": {                                # Control over what to put in the frontmatters
@@ -110,10 +117,11 @@ class Config:
                     self.config = OmegaConf.merge(self.config, user_config)
                     logger.info(f"Loaded configuration from {config_path}")
                 else:
-                    logger.warning(f"Configuration file not found: {config_path}")
+                    logger.error(f"Configuration file not found: {config_path}")
+                    exit(1)
             except Exception as e:
-                import traceback
-                logger.error(f"Error loading configuration file: {e}\nTraceback: {traceback.format_exc()}")
+                logger.error(f"Error loading configuration file: {e}")
+                raise
                 
         verbose = self.config.logging.level.upper() == "DEBUG"
         setup_logging(verbose=verbose)

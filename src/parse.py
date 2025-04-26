@@ -357,6 +357,10 @@ class ClangParser:
             location = (file_path, start.line, start.column, end.line, end.column)
         doc_comment = self.extract_doc_comment(cursor)
         entity = Entity(cursor.spelling, cursor.kind, location, doc_comment, parent)
+        
+        # Calculate and set namespace
+        entity.namespace = self._get_namespace_path(cursor)
+        
         entity.access = cursor.access_specifier
         entity.linkage = cursor.linkage
         if cursor.type and cursor.type.spelling:
@@ -447,6 +451,34 @@ class ClangParser:
         entity.is_defaulted = cursor.is_default_method()
         entity.is_deleted = cursor.is_default_method()
         
+    def _get_namespace_path(self, cursor: clang.cindex.Cursor) -> Optional[str]:
+        """Extract namespace path from a cursor by traversing its semantic parents
+        
+        Args:
+            cursor: Clang cursor to extract namespace from
+            
+        Returns:
+            Namespace string in format 'ns1::ns2::ns3' or None if no namespace
+        """
+        if not cursor:
+            return None
+            
+        namespaces = []
+        parent = cursor.semantic_parent
+        
+        # Traverse up the semantic parent chain to collect namespaces
+        while parent and parent.kind != clang.cindex.CursorKind.TRANSLATION_UNIT:
+            if parent.kind == clang.cindex.CursorKind.NAMESPACE:
+                # Only add non-empty namespace names (skip anonymous namespaces)
+                if parent.spelling:
+                    namespaces.insert(0, parent.spelling)
+            parent = parent.semantic_parent
+            
+        # Return None for global namespace, otherwise join with ::
+        if not namespaces:
+            return None
+        return '::'.join(namespaces)
+    
     def _process_class_features(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
         """Process class-specific features (inheritance, abstract classification)"""
         if cursor.kind not in (clang.cindex.CursorKind.CLASS_DECL, 
