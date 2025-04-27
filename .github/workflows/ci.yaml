@@ -1,0 +1,35 @@
+name: CI
+defaults:
+  run:
+    shell: bash -o pipefail -i {0}
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      debug_enabled:
+        type: boolean
+        description: 'Tmate debugging session'
+        required: false
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        with:
+          detached: true
+
+      - name: Build and test
+        run: |
+          curl -LsSf https://astral.sh/uv/install.sh | sh
+          uv sync
+          uv run python3 -m unittest discover tests/unit/
