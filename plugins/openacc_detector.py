@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import re
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class OpenACCDetector(FeatureDetector):
     """Detector for OpenACC GPU programming directives"""

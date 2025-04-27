@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import re
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class OpenMPDetector(FeatureDetector):
     """Detector for OpenMP parallel programming model directives

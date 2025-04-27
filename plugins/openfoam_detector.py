@@ -2,7 +2,7 @@
 
 import re
 from clang.cindex import CursorKind
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class OpenFOAMDetector(FeatureDetector):
     """
