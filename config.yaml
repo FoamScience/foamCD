@@ -1,16 +1,32 @@
 parser:
   # Path to libclang library (leave null for auto-detection)
   libclang_path: null
-  # Path to compilation database directory, main mode of operation
+  # Path to compilation database directory, preferred mode of operation
   compile_commands_dir: /home/fadeli/repos/foamCD/
-  # Directories to skip parsing (these must be absolute paths)
+  # Directories to skip when parsing (these must be absolute paths)
+  # You don't want to sit around waiting for parsing the whole STL lib
+  # But the parser is aggressive and thorough, so what needs to be skipped
+  # depends on:
+  # - User preference
+  # - System and compiler include folders
   prefixes_to_skip:
     - "/usr/include"
     - "/usr/include/c++/13"
     - "/usr/include/x86_64-linux-gnu"
     - "/usr/include/x86_64-linux-gnu/c++/13"
     - "/usr/lib/gcc/x86_64-linux-gnu/13/include"
+  # Custom folders to load DSL plugins from
+  plugin_dirs: []
+  # Plugin toggles
+  plugins:
+    enabled: true
+    # Disable these plugins
+    disabled_plugins: []
+    # Load only these plugins, disable everything else
+    only_plugins:
+      - openfoam
   # The rest of parser parameters are optional, deduced from compilation db if provided
+  # These are also not well tested...
   # C++ standard version to use (optional)
   cpp_standard: c++20
   # Additional include paths for compilation (optional)
@@ -40,9 +56,91 @@ logging:
   # Log file path (null = console only)
   file: null
 
-features:
-  # Feature detection options
-  detect_inheritance: true
-  detect_virtuals: true
-  parse_doc_comments: true
-  access_level_grouping: true
+markdown:
+  # Project name
+  project_name: My lib
+  # Output path for markdown files
+  output_path: markdown_docs
+  # Context for doc_uri, method_uri_doc and url_mappings.pattern:
+  # - {{ name }}: Entity name 
+  # - {{ namespace }}: Entity namespace
+  # - {{ start_line }} and {{ end_line }}: file range, if not available, both default to 1
+  # - {{ base_url }}: Leading URL section of project, or dependency
+  # - {{ file_path }}: Relative file path to git repo, or dependency project_dir
+  # - {{ full_path }}: Full file path, with no line numbers
+  # - {{ git_reference }}: Active (On-disk) Git reference (tag->branch->commit) for project or dependency
+  # - {{ git_repository }}: Default remote for Git project, or dependency
+  # - {{ project_name }}: Project or dependency project name
+  # - {{ project_dir }}: Automatically deduced from Git or the first match from dependency's path entry
+  # doc_uri is the generic file -> URI mapping for documented entities
+  doc_uri: /api/{{namespace}}_{{name}}
+  # method_doc_uri specializes the mapping for class methods
+  method_doc_uri: /api/{{namespace}}_{{parent_name}}
+  # Optional base URL for main project; leave empty to make Hugo work things out
+  project_base_url: null
+  # Optional active Git reference (tag, branch or commit)
+  git_reference: null
+  # Optional active remote for Git repo
+  git_repository: null
+  # Filename starts to ignore while generating URL mappings
+  url_mappings_ignore:
+    - /api
+  # Mapping file_path -> URL for dependency projects
+  url_mappings:
+  - base_url: https://devdocs.io/cpp
+    path:
+    - /usr/include
+    - /usr/include/x86_64-linux-gnu
+    pattern: '{{base_url}}/{{name}}'
+  - base_url: ""
+    path:
+    - /home/fadeli/repos/foamCD
+    pattern: '{{base_url}}/api/{{namespace}}_{{name}}'
+  # Control over Markdown frontmatter
+  frontmatter:
+    # Individiual entity pages
+    entities:
+      # Not yet implemented
+      complain_about:
+      - level_of_extensibility
+      - level_of_configurability
+      - level_of_testability
+      - rule_of_5_compliance
+      - sfinae_usage
+      - crtp_usag
+      # Get contributors from Git
+      contributors_from_git: true
+      # Report prominant C++/OpenFOAM features used by the entity
+      knowledge_requirements: true
+      # Toggle unit tests tracking for entities
+      unit_tests: true
+      # Unit test Jinja2 Pattern; similar to doc_uri
+      unit_test_linkage_pattern: '{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}'
+      # How to look for unit test  files
+      unit_tests_compile_commands_dir: /home/fadeli/repos/foamCD/tests/fixtures_unit_tests
+    # The index pages
+    index:
+      # Generate an index for classes
+      classes_and_class_templates: true
+      # List namespaces in class index
+      namespaces: true
+      # Include entry points in the class index
+      entry_points: true
+      # Auto-detect important OpenFOAM classes to highlight
+      rts_entry_points: true
+      # In addition to auto-picked ones, highlight these classes:
+      manual_entry_points:
+        - BaseClass
+      # Index filename (for class index)
+      filename: _index.md
+      # Generate an index for free functions
+      functions_and_function_templates: true
+      # Generate an index for concepts
+      concepts: true
+      # Generate an index for C++ modules, not yet implemented
+      cpp_modules: false
+      # Standard Hugo frontmatter for the index
+      date: xxxx-xx-xx
+      draft: false
+      layout: library
+      weight: 2
