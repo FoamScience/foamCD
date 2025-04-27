@@ -34,6 +34,7 @@ class Entity:
         self.is_abstract = False  # For classes with at least one pure virtual method
         self.is_defaulted = False
         self.is_deleted = False
+        self.is_deprecated = False  # Can be set by either [[deprecated]] attribute or @deprecated doc tag
         
         # External reference flag (for placeholder entities from standard library, etc.)
         self.is_external_reference = False
@@ -77,12 +78,21 @@ class Entity:
         self.base_classes.append(base_class)
         
     def _parse_doc_comment(self, doc_comment: str) -> Dict[str, Any]:
-        """Parse documentation comment into structured data"""
-        # TODO: This will probably be removed. Markdown content in comments will
-        #       be gathered and forwarded to db as a single string
-        #       maybe with options to skip specific comments
+        """Parse documentation comment into structured data
+        
+        This method parses Doxygen, JavaDoc, and simple C++ comment styles into
+        a structured dictionary. If no specific tags are found, the entire comment
+        is treated as the description.
+        
+        Args:
+            doc_comment: The raw comment string to parse
+            
+        Returns:
+            Dictionary with parsed documentation fields
+        """
         if not doc_comment:
             return {}
+            
         result = {
             'description': '',
             'params': {},
@@ -93,17 +103,24 @@ class Entity:
             'since': '',
             'tags': {}
         }
+        
+        doc_comment = re.sub(r'^\s*[/\*]+\s*', '', doc_comment, flags=re.MULTILINE)
+        doc_comment = re.sub(r'\s*\*+[/]?\s*$', '', doc_comment, flags=re.MULTILINE)
         lines = doc_comment.split('\n')
         desc_lines = []
         i = 0
         while i < len(lines):
             line = lines[i].strip()
-            if line.startswith('@') or line.startswith('\\'):
+            if re.match(r'^[@\\][a-zA-Z]+\b', line):
                 break
             desc_lines.append(line)
             i += 1
-        result['description'] = '\n'.join(desc_lines).strip()
-        
+        description = '\n'.join(desc_lines).strip()
+        if not description and doc_comment:
+            result['description'] = doc_comment.strip()
+            return result
+            
+        result['description'] = description
         current_tag = None
         current_content = []
         while i < len(lines):
@@ -119,7 +136,8 @@ class Entity:
                 current_content.append(line)
         if current_tag and current_content:
             self._add_tag_to_result(result, current_tag, '\n'.join(current_content).strip())
-            
+        if not result['description'] and doc_comment:
+            result['description'] = doc_comment.strip()
         return result
     
     def _add_tag_to_result(self, result: Dict[str, Any], tag: str, content: str):
@@ -138,6 +156,7 @@ class Entity:
             result['see'].append(content)
         elif tag == 'deprecated':
             result['deprecated'] = content
+            self.is_deprecated = True
         elif tag == 'since':
             result['since'] = content
         else:
@@ -177,6 +196,7 @@ class Entity:
             'full_signature': self.full_signature,
             'cpp_features': list(self.cpp_features),
             'is_external_reference': self.is_external_reference,
+            'is_deprecated': self.is_deprecated,
         }
         if self.base_classes:
             result['base_classes'] = self.base_classes

@@ -205,6 +205,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     "filename": self._get_entity_filename(entity),
                     "namespace": namespace,
                     "signature": entity.get("full_signature", ""),
+                    "documentation": self._format_entity_documentation(entity),
                     "ctors": self._get_entity_constructors(entity),
                     "factory_methods": self._get_entity_factory_methods(entity),
                     "dtor": self._get_entity_destructor(entity),
@@ -386,6 +387,45 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             
         return "unknown.H"  # Placeholder
         
+    def _format_entity_documentation(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Format entity documentation for inclusion in frontmatter
+        
+        This extracts documentation from the entity's 'documentation' field
+        which is populated from the parsed_docs table and related doc tables.
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            Formatted documentation dictionary suitable for frontmatter
+        """
+        result = {
+            "description": "",
+            "params": {},
+            "returns": "",
+            "deprecated": "",
+            "since": ""
+        }
+        
+        if "documentation" in entity and isinstance(entity["documentation"], dict):
+            doc = entity["documentation"]
+            for field in ["description", "returns", "deprecated", "since"]:
+                if field in doc and doc[field]:
+                    result[field] = doc[field]
+            if "params" in doc and isinstance(doc["params"], dict):
+                result["params"] = doc["params"]
+        if not result["description"] and entity.get("doc_comment"):
+            result["description"] = entity["doc_comment"]
+            
+        if entity.get("deprecated_message") and not result["deprecated"]:
+            result["deprecated"] = entity.get("deprecated_message")
+        elif entity.get("is_deprecated", False) and not result["deprecated"]:
+            entity_type = entity.get("kind", "").lower().replace("_", " ")
+            result["deprecated"] = f"This {entity_type} is marked as deprecated"
+        result["is_deprecated"] = bool(result["deprecated"] or entity.get("is_deprecated", False))
+            
+        return result
+    
     def _get_entity_url(self, entity: Dict[str, Any]) -> str:
         """Get the URL for an entity, transformed via templates.
         For now, only handles classes/structs.
@@ -525,6 +565,34 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "access_specifier": method_entity.get("access_specifier", "public").lower()
         }
         
+        formatted_info["documentation"] = {
+            "description": "",
+            "returns": "",
+            "deprecated": "",
+            "since": ""
+        }
+        if method_entity.get("deprecated_message"):
+            formatted_info["documentation"]["deprecated"] = method_entity.get("deprecated_message")
+        elif method_entity.get("is_deprecated", False):
+            method_type = "method" if not is_constructor and not is_destructor else ("constructor" if is_constructor else "destructor")
+            formatted_info["documentation"]["deprecated"] = f"This {method_type} is marked as deprecated"
+        if "documentation" in method_entity:
+            doc = method_entity["documentation"]
+            if doc.get("deprecated") and not formatted_info["documentation"]["deprecated"]:
+                formatted_info["documentation"]["deprecated"] = doc.get("deprecated")
+            formatted_info["documentation"]["description"] = doc.get("description", "")
+            formatted_info["documentation"]["returns"] = doc.get("returns", "")
+            formatted_info["documentation"]["since"] = doc.get("since", "")
+            if "params" in doc and parameters:
+                param_docs = doc.get("params", {})
+                for param in formatted_info["parameters"]:
+                    param_name = param.get("name")
+                    if param_name and param_name in param_docs:
+                        param["description"] = param_docs[param_name]
+        elif method_entity.get("doc_comment"):
+            formatted_info["documentation"] = {
+                "description": method_entity.get("doc_comment", "")
+            }
         if "file" in method_entity:
             file_path = method_entity["file"]
             line = method_entity.get("line") or method_entity.get("start_line")

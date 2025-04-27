@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 import logging
-from typing import Set, List
+from typing import List
 
 from clang.cindex import CursorKind
 
@@ -1019,17 +1019,62 @@ class DeprecatedAttributeDetector(FeatureDetector):
         super().__init__("deprecated_attribute", "C++14", "[[deprecated(\"message\")]] compiler attribute")
     
     def detect(self, cursor, token_spellings, token_str, available_cursor_kinds):
-        # Check for [[deprecated]] attribute (with or without message)
-        if '[[' in token_spellings and 'deprecated' in token_spellings and ']]' in token_spellings:
-            # Check for proper sequence
-            for i in range(len(token_spellings) - 2):
-                if token_spellings[i] == '[[' and token_spellings[i+1] == 'deprecated':
-                    logger.debug(f"Detected [[deprecated]] attribute")
+        logger.debug(f"Tokens for {cursor.spelling}: {token_spellings}")
+        deprecation_message = None
+        if '[[' in token_spellings and ']]' in token_spellings:
+            for i in range(len(token_spellings)):
+                token = token_spellings[i]
+                if token == '[[' and i+1 < len(token_spellings) and 'deprecated' in token_spellings[i+1]:
+                    logger.debug(f"Detected [[deprecated]] attribute - pattern 1")
+                    if i+3 < len(token_spellings) and token_spellings[i+2] == '(':
+                        message_token = token_spellings[i+3]
+                        if message_token.startswith('"') and message_token.endswith('"'):
+                            deprecation_message = message_token[1:-1]  # Remove quotes
+                            logger.debug(f"Extracted deprecation message: {deprecation_message}")
+                    self.deprecation_message = deprecation_message
                     return True
                     
-        # Check for attribute in string context
-        if 'deprecated' in token_str.lower() and '[[' in token_str and ']]' in token_str:
-            logger.debug(f"Detected [[deprecated]] attribute in documentation or naming")
+                if token.startswith('[[') and 'deprecated' in token:
+                    logger.debug(f"Detected [[deprecated]] attribute - pattern 2")
+                    if i+2 < len(token_spellings) and '(' in token_spellings[i+1]:
+                        message_parts = []
+                        j = i+1
+                        while j < len(token_spellings) and ')' not in token_spellings[j]:
+                            if token_spellings[j] != '(':
+                                message_parts.append(token_spellings[j])
+                            j += 1
+                        if message_parts:
+                            message = ' '.join(message_parts)
+                            if message.startswith('"') and message.endswith('"'):
+                                deprecation_message = message[1:-1]
+                                logger.debug(f"Extracted deprecation message: {deprecation_message}")
+                    self.deprecation_message = deprecation_message
+                    return True
+                    
+                if 'deprecated' in token.lower():
+                    window_start = max(0, i-3)
+                    window_end = min(len(token_spellings), i+3)
+                    window = token_spellings[window_start:window_end]
+                    if any('[[' in t for t in window) and any(']]' in t for t in window):
+                        logger.debug(f"Detected [[deprecated]] attribute - pattern 3: {window}")
+                        for j, t in enumerate(window):
+                            if '(' in t and j+1 < len(window):
+                                next_token = window[j+1]
+                                if '"' in next_token:
+                                    message = next_token.strip('"')
+                                    deprecation_message = message
+                                    logger.debug(f"Extracted deprecation message: {deprecation_message}")
+                        self.deprecation_message = deprecation_message
+                        return True
+        
+        if '[[deprecated' in token_str:
+            logger.debug(f"Detected [[deprecated]] attribute in combined token string")
+            import re
+            message_match = re.search(r'\[\[deprecated\(\s*"([^"]*)"\s*\)\]\]', token_str)
+            if message_match:
+                deprecation_message = message_match.group(1)
+                logger.debug(f"Extracted deprecation message from regex: {deprecation_message}")
+            self.deprecation_message = deprecation_message
             return True
             
         return False

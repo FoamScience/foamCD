@@ -99,6 +99,8 @@ class EntityDatabase:
                 is_abstract INTEGER,
                 linkage TEXT,
                 is_external_reference INTEGER,
+                is_deprecated INTEGER DEFAULT 0,
+                deprecated_message TEXT,
                 FOREIGN KEY (parent_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
             )
             ''')
@@ -702,11 +704,21 @@ class EntityDatabase:
             uuid: Entity UUID
             parsed_doc: Dictionary with parsed documentation
         """
+        if not parsed_doc:
+            logger.debug(f"No parsed documentation for entity {uuid}")
+            return
+            
         try:
-            description = parsed_doc.get('description')
-            returns = parsed_doc.get('returns')
-            deprecated = parsed_doc.get('deprecated')
-            since = parsed_doc.get('since')
+            description = parsed_doc.get('description', '')            
+            if not description and isinstance(parsed_doc, dict):
+                for _, value in parsed_doc.items():
+                    if isinstance(value, str) and value.strip():
+                        description = value.strip()
+                        break
+            returns = parsed_doc.get('returns', '')
+            deprecated = parsed_doc.get('deprecated', '')
+            since = parsed_doc.get('since', '')
+            logger.debug(f"Storing documentation for entity {uuid}: {description[:50]}{'...' if len(description) > 50 else ''}")
             
             self.cursor.execute('''
             INSERT OR REPLACE INTO parsed_docs
@@ -854,15 +866,25 @@ class EntityDatabase:
             type_info = entity.get('type_info', None)
             full_signature = entity.get('full_signature', None)
             
-            # Insert entity with all fields
+            is_deprecated = 0
+            deprecated_message = None
+            if entity.get('is_deprecated') is True:
+                is_deprecated = 1
+            parsed_doc = entity.get('parsed_doc', {})
+            if parsed_doc and isinstance(parsed_doc, dict) and parsed_doc.get('deprecated'):
+                is_deprecated = 1
+                deprecated_message = parsed_doc.get('deprecated')
+                logger.debug(f"Found deprecation message in parsed_doc: {deprecated_message}")
             namespace = entity.get('namespace', None)
             self.cursor.execute('''
             INSERT OR REPLACE INTO entities 
             (uuid, name, kind, namespace, file, line, end_line, column, end_column, parent_uuid, 
-             doc_comment, access, type_info, full_signature, is_abstract, linkage, is_external_reference)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             doc_comment, access, type_info, full_signature, is_abstract, linkage, is_external_reference,
+             is_deprecated, deprecated_message)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''', (uuid, name, kind, namespace, file_path, line, end_line, column, end_column, parent_uuid, 
-                  doc_comment, access_level, type_info, full_signature, 0, None, 0))
+                  doc_comment, access_level, type_info, full_signature, 0, None, 0,
+                  is_deprecated, deprecated_message))
             
             # Store method classification if present
             method_info = entity.get('method_info', {})
@@ -980,6 +1002,9 @@ class EntityDatabase:
             # Convert row to dictionary
             entity = dict(row)
             
+            if 'is_deprecated' in entity:
+                entity['is_deprecated'] = bool(entity['is_deprecated'])
+            
             # Get features - with better error handling
             try:
                 self.cursor.execute('''
@@ -1036,6 +1061,37 @@ class EntityDatabase:
             entity = self.get_entity(uuid)
             if not entity:
                 return None
+            if entity.get('is_deprecated') == 1:
+                if not 'documentation' in entity:
+                    entity['documentation'] = {}
+                if entity.get('deprecated_message'):
+                    entity['documentation']['deprecated'] = entity['deprecated_message']
+                else:
+                    entity_type = entity.get('kind', '').lower().replace('_', ' ')
+                    entity['documentation']['deprecated'] = f"This {entity_type} is deprecated"
+            self.cursor.execute('''
+            SELECT description, returns, since FROM parsed_docs
+            WHERE entity_uuid = ?
+            ''', (uuid,))
+            doc_info = self.cursor.fetchone()
+            if doc_info:
+                if not 'documentation' in entity:
+                    entity['documentation'] = {}
+                
+                entity['documentation']['description'] = doc_info[0] if doc_info[0] else ''
+                entity['documentation']['returns'] = doc_info[1] if doc_info[1] else ''
+                entity['documentation']['since'] = doc_info[2] if doc_info[2] else ''
+                
+            self.cursor.execute('''
+            SELECT param_name, description FROM doc_parameters
+            WHERE entity_uuid = ?
+            ''', (uuid,))
+            params = {row[0]: row[1] for row in self.cursor.fetchall()}
+            if params:
+                if "documentation" not in entity:
+                    entity["documentation"] = {}
+                entity["documentation"]["params"] = params
+                
             if "METHOD" in entity.get("kind", ""):
                 self.cursor.execute('''
                 SELECT * FROM method_classification

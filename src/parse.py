@@ -17,7 +17,7 @@ except ImportError:
 from logs import setup_logging
 from db import EntityDatabase
 from config import Config
-from feature_detectors import FeatureDetectorRegistry
+from feature_detectors import FeatureDetectorRegistry, DeprecatedAttributeDetector
 from plugin_system import PluginManager
 
 logger = setup_logging()
@@ -165,6 +165,12 @@ class ClangParser:
         self.index = clang.cindex.Index.create()
         self.entities: Dict[str, List[Entity]] = {}
         self.db = db
+
+        # TODO: consider adding PARSE_INCOMPLETE dynamically for headers...
+        self.tu_options = (
+            clang.cindex.TranslationUnit.PARSE_DETAILED_PROCESSING_RECORD |
+            clang.cindex.TranslationUnit.PARSE_INCLUDE_BRIEF_COMMENTS_IN_CODE_COMPLETION
+        )
         
         self.use_tree_sitter_fallback = use_tree_sitter_fallback and TREE_SITTER_IMPORT_SUCCESS
         self.tree_sitter_subparser = None
@@ -254,8 +260,41 @@ class ClangParser:
         return cpp_args
 
     def extract_doc_comment(self, cursor: clang.cindex.Cursor) -> str:
-        """Extract documentation comment for a cursor"""
+        """Extract documentation comment for a cursor
+        
+        This extracts both doxygen-style (/** ... */) and simple C++ comments (// ...)
+        that appear immediately before the declaration. If multiple comment blocks exist,
+        they are combined.
+        
+        Args:
+            cursor: The cursor to extract comments from
+            
+        Returns:
+            Extracted and cleaned comment string
+        """
         raw_comment = cursor.raw_comment
+        if not raw_comment and cursor.location.file:
+            try:
+                file_path = cursor.location.file.name
+                line_num = cursor.location.line
+                if line_num > 1:  # Need at least one line above for a comment
+                    with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                        source_lines = f.readlines()
+                    comment_lines = []
+                    current_line = line_num - 2
+                    
+                    while current_line >= 0:
+                        line = source_lines[current_line].strip()
+                        if not line or not (line.startswith('//') or line.startswith('/*') or line.startswith('*')):
+                            break
+                        comment_lines.insert(0, line)
+                        current_line -= 1
+                    if comment_lines:
+                        raw_comment = '\n'.join(comment_lines)
+                        logger.debug(f"Manually extracted comment for {cursor.spelling} at {file_path}:{line_num}")
+            except Exception as e:
+                logger.debug(f"Error manually extracting comment: {e}")
+        
         if not raw_comment:
             return ""
         lines = raw_comment.split('\n')
@@ -274,7 +313,10 @@ class ClangParser:
             elif line.startswith('//'):
                 line = line[2:]
             processed_lines.append(line.strip())
-        return '\n'.join(processed_lines).strip()
+            
+        result = '\n'.join(processed_lines).strip()
+        logger.debug(f"Extracted comment: {result[:50]}{'...' if len(result) > 50 else ''}")
+        return result
     
     def detect_cpp_features(self, cursor: clang.cindex.Cursor, entity=None) -> Set[str]:
         """Detect C++ language features used by this cursor and its children
@@ -295,6 +337,20 @@ class ClangParser:
         registry = FeatureDetectorRegistry()
         registry.register_all_detectors()
         features = registry.detect_features(cursor, all_token_spellings, all_token_text, available_cursor_kinds)
+        
+        # Set is_deprecated flag if we see the C++14 [[deprecated]] attribute
+        if entity and 'deprecated_attribute' in features:
+            entity.is_deprecated = True
+            for detector in registry.detectors.values():
+                if isinstance(detector, DeprecatedAttributeDetector) and hasattr(detector, 'deprecation_message'):
+                    deprecation_message = detector.deprecation_message
+                    if deprecation_message:
+                        if not entity.parsed_doc:
+                            entity.parsed_doc = {}
+                        entity.parsed_doc['deprecated'] = deprecation_message
+                        logger.debug(f"Captured deprecation message: {deprecation_message}")
+                    break
+            logger.debug(f"Setting is_deprecated=True for entity {entity.name} due to [[deprecated]] attribute")
         
         # Detect DSL features from plugins if enabled
         if not self.disable_plugins and hasattr(self, 'plugin_manager'):
@@ -407,6 +463,7 @@ class ClangParser:
         entity.cpp_features = self.detect_cpp_features(cursor, entity)
         self._process_method_classification(entity, cursor)
         self._process_class_features(entity, cursor)
+        self._detect_deprecation(entity, cursor)
         
         return entity
         
@@ -414,7 +471,8 @@ class ClangParser:
         """Process C++ method classifications (virtual, override, etc.)"""
         if cursor.kind not in [clang.cindex.CursorKind.CXX_METHOD,
                                clang.cindex.CursorKind.CONSTRUCTOR,
-                               clang.cindex.CursorKind.DESTRUCTOR]:
+                               clang.cindex.CursorKind.DESTRUCTOR,
+                               clang.cindex.CursorKind.FUNCTION_DECL]:  
             return
             
         if cursor.kind == clang.cindex.CursorKind.CXX_METHOD:
@@ -430,27 +488,30 @@ class ClangParser:
                 elif method_name == f"~{parent_name}":
                     entity.kind = clang.cindex.CursorKind.DESTRUCTOR
                     logger.debug(f"Identified method '{method_name}' as a destructor of class '{parent_name}'")
-        entity.is_virtual = cursor.is_virtual_method()
-        entity.is_pure_virtual = cursor.is_pure_virtual_method()
-        try:
-            entity.is_override = cursor.is_override_method()
-        except AttributeError:
-            tokens = list(cursor.get_tokens())
-            entity.is_override = any(t.spelling == 'override' for t in tokens)
         
-        try:
-            entity.is_final = cursor.is_final_method()
-        except AttributeError:
-            tokens = list(cursor.get_tokens())
-            entity.is_final = any(t.spelling == 'final' for t in tokens)
-            
-        tokens = list(cursor.get_tokens())
-        token_spellings = [t.spelling for t in tokens]
+        if cursor.kind in [clang.cindex.CursorKind.CXX_METHOD, 
+                          clang.cindex.CursorKind.CONSTRUCTOR,
+                          clang.cindex.CursorKind.DESTRUCTOR]:
+            entity.is_virtual = cursor.is_virtual_method()
+            entity.is_pure_virtual = cursor.is_pure_virtual_method()
+            try:
+                entity.is_override = cursor.is_override_method()
+            except AttributeError:
+                tokens = list(cursor.get_tokens())
+                entity.is_override = any(t.spelling == 'override' for t in tokens)
+            try:
+                entity.is_final = cursor.is_final_method()
+            except AttributeError:
+                tokens = list(cursor.get_tokens())
+                entity.is_final = any(t.spelling == 'final' for t in tokens)
+        
         try:
             entity.is_static = cursor.storage_class == clang.cindex.StorageClass.STATIC
         except AttributeError:
-            entity.is_static = any(t.spelling == 'static' for t in token_spellings)
-
+            tokens = list(cursor.get_tokens())
+            token_spellings = [t.spelling for t in tokens]
+            entity.is_static = 'static' in token_spellings
+            
         entity.is_defaulted = cursor.is_default_method()
         entity.is_deleted = cursor.is_default_method()
         
@@ -481,6 +542,94 @@ class ClangParser:
         if not namespaces:
             return None
         return '::'.join(namespaces)
+    
+    def _detect_deprecation(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
+        """Detect and process deprecation information from both attributes and doc comments
+        
+        This method specifically looks for [[deprecated]] attributes and combines that information
+        with any documentation-based deprecation. It works for all entity types.
+        """
+        self._check_deprecation_from_diagnostics(entity, cursor)
+        if not entity.is_deprecated:
+            self._check_deprecation_from_tokens(entity, cursor)
+            if not entity.is_deprecated:
+                self._check_deprecation_from_source(entity, cursor)
+        if entity.is_deprecated and not entity.parsed_doc.get('deprecated'):
+            if not entity.parsed_doc:
+                entity.parsed_doc = {}
+            entity_type = entity.kind.name.lower().replace('_', ' ')
+            entity.parsed_doc['deprecated'] = f"This {entity_type} is marked as deprecated"
+            
+    def _check_deprecation_from_diagnostics(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
+        """Check for deprecation warnings in Clang's diagnostics"""
+        if not hasattr(cursor, 'translation_unit') or not cursor.translation_unit or not cursor.location.file:
+            return
+            
+        for diagnostic in cursor.translation_unit.diagnostics:
+            if (diagnostic.location.file and 
+                diagnostic.location.file.name == cursor.location.file.name and
+                diagnostic.location.line == cursor.location.line):
+                warning_text = diagnostic.spelling.lower()
+                if 'deprecated' in warning_text and (entity.name.lower() in warning_text or cursor.spelling.lower() in warning_text):
+                    entity.is_deprecated = True
+                    logger.debug(f"Found deprecation diagnostic for {entity.name}: {diagnostic.spelling}")
+                    import re
+                    message_match = re.search(r"deprecated:\s*(.*?)(?:\s*\[-W|$)", diagnostic.spelling)
+                    if message_match:
+                        message = message_match.group(1).strip()
+                        if not entity.parsed_doc:
+                            entity.parsed_doc = {}
+                        entity.parsed_doc['deprecated'] = message
+                        logger.debug(f"Extracted deprecation message: {message}")
+                    break
+                    
+    def _check_deprecation_from_tokens(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
+        """Check for [[deprecated]] attributes by analyzing tokens"""
+        try:
+            tokens = list(cursor.get_tokens())
+            if not tokens:
+                return
+            token_spellings = [t.spelling for t in tokens]
+            token_str = ' '.join(token_spellings)
+            if '[[' in token_str and ']]' in token_str and 'deprecated' in token_str:
+                entity.is_deprecated = True
+                logger.debug(f"Found deprecation attribute in tokens for {entity.name}")
+                import re
+                message_match = re.search(r'\[\[deprecated\(\s*"([^"]*)"\s*\)\]\]', token_str)
+                if message_match:
+                    if not entity.parsed_doc:
+                        entity.parsed_doc = {}
+                    entity.parsed_doc['deprecated'] = message_match.group(1)
+                    logger.debug(f"Extracted message from tokens: {message_match.group(1)}")
+        except Exception as e:
+            logger.debug(f"Error in token-based deprecation detection: {e}")
+            
+    def _check_deprecation_from_source(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
+        """Check for [[deprecated]] attributes by directly analyzing source code"""
+        try:
+            if not cursor.location.file or not cursor.extent.start or not cursor.extent.end:
+                return
+            with open(cursor.location.file.name, 'r') as f:
+                source_lines = f.readlines()
+            line_idx = cursor.location.line - 1  # 0-indexed
+            if line_idx > 0:
+                preceding_line = source_lines[line_idx - 1].strip()
+                if '[[deprecated' in preceding_line:
+                    entity.is_deprecated = True
+                    logger.debug(f"Found deprecation attribute in source for {entity.name}")
+                    import re
+                    message_match = re.search(r'\[\[deprecated\(\s*"([^"]*)"\s*\)\]\]', preceding_line)
+                    if message_match:
+                        if not entity.parsed_doc:
+                            entity.parsed_doc = {}
+                        entity.parsed_doc['deprecated'] = message_match.group(1)
+                        logger.debug(f"Extracted message from source: {message_match.group(1)}")
+        except Exception as e:
+            logger.debug(f"Error in source-based deprecation detection: {e}")
+        if entity.is_deprecated and not entity.parsed_doc.get('deprecated'):
+            if not entity.parsed_doc:
+                entity.parsed_doc = {}
+            entity.parsed_doc['deprecated'] = f"This {entity.kind.name.lower().replace('_', ' ')} is deprecated"
     
     def _process_class_features(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
         """Process class-specific features (inheritance, abstract classification)"""
@@ -601,7 +750,7 @@ class ClangParser:
         libclang_error = None
         try:
             logger.debug(f"parsing translation unit {filepath} with index.parse")
-            translation_unit = self.index.parse(filepath, clean_args)
+            translation_unit = self.index.parse(filepath, clean_args, options=self.tu_options)
         except Exception as e:
             import traceback
             libclang_error = e
