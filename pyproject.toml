@@ -17,13 +17,14 @@ dependencies = [
     "libclang>=18.1.1",
     "omegaconf>=2.3.0",
     "python-frontmatter>=1.1.0",
+    "tomli>=2.2.1",
     "tree-sitter>=0.24.0",
     "tree-sitter-cpp>=0.23.4",
 ]
 
 [project.scripts]
-foamcd-parse = "parse:main"
-foamcd-markdown = "markdown:main"
+foamcd-parse = "foamcd.parse:main"
+foamcd-markdown = "foamcd.markdown:main"
 
 [project.urls]
 "Homepage" = "https://github.com/FoamScience/foamCD"
@@ -38,11 +39,11 @@ dev = [
 package = true
 
 [tool.hatch.build.targets.wheel]
-packages = ["src", "plugins"]
+packages = ["src/foamcd", "plugins"]
 
 [tool.hatch.build]
 include = [
-  "src/**.py",
+  "src/foamcd/**.py",
   "plugins/**.py",
   "README.md", 
   "config.yaml",
