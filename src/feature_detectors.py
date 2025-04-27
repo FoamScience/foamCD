@@ -1019,7 +1019,8 @@ class DeprecatedAttributeDetector(FeatureDetector):
         super().__init__("deprecated_attribute", "C++14", "[[deprecated(\"message\")]] compiler attribute")
     
     def detect(self, cursor, token_spellings, token_str, available_cursor_kinds):
-        logger.debug(f"Tokens for {cursor.spelling}: {token_spellings}")
+        cursor_name = cursor.spelling if cursor else "<unknown>"
+        logger.debug(f"Tokens for {cursor_name}: {token_spellings}")
         deprecation_message = None
         if '[[' in token_spellings and ']]' in token_spellings:
             for i in range(len(token_spellings)):
