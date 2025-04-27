@@ -1,9 +1,15 @@
 [project]
 name = "foamCD"
 version = "0.1.0"
-description = "Documenting C++ code the right way, focusing on OpenFOAM-like libraries"
+description = "Highlighy opinionated ways to document OpenFOAM-like c++ libraries"
 readme = "README.md"
 requires-python = ">=3.12"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Development Status :: 4 - Beta",
+]
 dependencies = [
     "clang>=20.1.0",
     "colorlog>=6.9.0",
@@ -19,6 +25,10 @@ dependencies = [
 foamcd-parse = "parse:main"
 foamcd-markdown = "markdown:main"
 
+[project.urls]
+"Homepage" = "https://github.com/FoamScience/foamCD"
+"Bug Tracker" = "https://github.com/FoamScience/foamCD/issues"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3.5",
@@ -26,3 +36,18 @@ dev = [
 
 [tool.uv]
 package = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src", "plugins"]
+
+[tool.hatch.build]
+include = [
+  "src/**.py",
+  "plugins/**.py",
+  "README.md", 
+  "config.yaml",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
