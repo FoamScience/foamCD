@@ -4,9 +4,8 @@ import os
 import sqlite3
 from typing import List, Dict, Any, Optional
 
-from logs import setup_logging
-
-from common import CPP_IMPLEM_EXTENSIONS, CPP_HEADER_EXTENSIONS
+from .logs import setup_logging
+from .common import CPP_IMPLEM_EXTENSIONS, CPP_HEADER_EXTENSIONS
 
 logger = setup_logging()
 

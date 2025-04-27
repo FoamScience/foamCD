@@ -10,13 +10,14 @@ import frontmatter
 from datetime import datetime
 from jinja2 import Template
 
-from logs import setup_logging
-from db import EntityDatabase
-from markdown_base import MarkdownGeneratorBase
-from markdown_class_index import ClassIndexGenerator
-from markdown_functions_index import FunctionsIndexGenerator
-from markdown_concepts_index import ConceptsIndexGenerator
-from git import get_git_root
+from .logs import setup_logging
+from .db import EntityDatabase
+from .markdown_base import MarkdownGeneratorBase
+from .markdown_class_index import ClassIndexGenerator
+from .markdown_functions_index import FunctionsIndexGenerator
+from .markdown_concepts_index import ConceptsIndexGenerator
+from .git import get_git_root
+from .version import get_version
 
 logger = setup_logging()
 
@@ -1853,12 +1854,30 @@ class MarkdownGenerator(MarkdownGeneratorBase):
 
 def main():
     """Main entry point for markdown generation"""
+    # First check for version flag without enforcing required arguments
+    version_parser = argparse.ArgumentParser(add_help=False)
+    version_parser.add_argument("--version", action="store_true", help="Show version information and exit")
+    
+    # Parse only the known args first to check for version
+    version_args, _ = version_parser.parse_known_args()
+    
+    if version_args.version:
+        print(f"foamCD {get_version()}")
+        return 0
+    
+    # If not showing version, use the regular parser with required arguments
     parser = argparse.ArgumentParser(description="Generate markdown documentation from foamCD database")
     parser.add_argument("--db", dest="db_path", required=True, help="Path to foamCD SQLite database")
     parser.add_argument("--output", dest="output_path", required=True, help="Path to output markdown files")
     parser.add_argument("--project", dest="project_dir", default=None, help="Project directory to filter entities by")
     parser.add_argument("--config", dest="config_path", default=None, help="Path to configuration file")
+    parser.add_argument("--version", action="store_true", help="Show version information and exit")
     args = parser.parse_args()
+    
+    # Version check is handled above, but keep this for completeness
+    if args.version:
+        print(f"foamCD {get_version()}")
+        return 0
     
     try:
         generator = MarkdownGenerator(

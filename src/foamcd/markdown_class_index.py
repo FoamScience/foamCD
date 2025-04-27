@@ -4,10 +4,10 @@ import os
 import frontmatter
 from datetime import datetime
 from typing import Optional
-import logging
 
-from markdown_base import MarkdownGeneratorBase
-from config import Config
+from .markdown_base import MarkdownGeneratorBase
+from .config import Config
+from .logs import setup_logging
 
 class ClassHierarchyFlattener:
     """Helper class for flattening class hierarchies with separators"""
@@ -41,7 +41,7 @@ class ClassHierarchyFlattener:
         
         return result
 
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 class ClassIndexGenerator(MarkdownGeneratorBase):
     """Generator for class index, entry points, and namespace information"""

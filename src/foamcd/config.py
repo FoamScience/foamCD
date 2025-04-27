@@ -5,7 +5,7 @@ from typing import Optional, Any
 import yaml
 from omegaconf import OmegaConf
 
-from logs import setup_logging
+from .logs import setup_logging
 
 logger = setup_logging()
 

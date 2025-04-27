@@ -4,10 +4,10 @@ import os
 import frontmatter
 from datetime import datetime
 from typing import Optional
-import logging
 
-from markdown_base import MarkdownGeneratorBase
-from config import Config
+from .markdown_base import MarkdownGeneratorBase
+from .config import Config
+from .logs import setup_logging
 
 class FunctionHierarchyFlattener:
     """Helper class for flattening function hierarchies with separators"""
@@ -35,7 +35,7 @@ class FunctionHierarchyFlattener:
             process_function_and_overloads(function_node, is_new_group=(i > 0))
         return result
 
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 class FunctionsIndexGenerator(MarkdownGeneratorBase):
     """Generator for functions index documentation"""

@@ -12,7 +12,7 @@ eg. for macro-heavy unit-testing frameworks
 
 from typing import List, Dict, Any
 
-from logs import setup_logging
+from .logs import setup_logging
 
 logger = setup_logging()
 

@@ -7,10 +7,10 @@ from typing import Dict, List, Any, Optional
 from omegaconf import OmegaConf
 from jinja2 import Template
 
-from logs import setup_logging
-from config import Config
-from db import EntityDatabase
-from git import get_git_repo_url, get_git_reference, get_relative_path_from_git_root
+from .logs import setup_logging
+from .config import Config
+from .db import EntityDatabase
+from .git import get_git_repo_url, get_git_reference, get_relative_path_from_git_root
 
 logger = setup_logging()
 

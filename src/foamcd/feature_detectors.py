@@ -5,7 +5,8 @@ from typing import List
 
 from clang.cindex import CursorKind
 
-logger = logging.getLogger(__name__)
+from .logs import setup_logging
+logger = setup_logging()
 
 class FeatureDetector:
     """Base class for C++/DSL feature detectors"""

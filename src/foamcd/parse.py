@@ -5,8 +5,10 @@ import sys
 import hashlib
 import argparse
 import platform
+import tomli
+import importlib.metadata
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, Union
 
 try:
     from tree_sitter_subparser import TreeSitterSubparser, is_tree_sitter_available
@@ -14,15 +16,16 @@ try:
 except ImportError:
     TREE_SITTER_IMPORT_SUCCESS = False
 
-from logs import setup_logging
-from db import EntityDatabase
-from config import Config
-from feature_detectors import FeatureDetectorRegistry, DeprecatedAttributeDetector
-from plugin_system import PluginManager
+from .logs import setup_logging
+from .db import EntityDatabase
+from .config import Config
+from .version import get_version
+from .feature_detectors import FeatureDetectorRegistry, DeprecatedAttributeDetector
+from .plugin_system import PluginManager
 
 logger = setup_logging()
 
-from common import CPP_HEADER_EXTENSIONS, CPP_IMPLEM_EXTENSIONS, CPP_FILE_EXTENSIONS
+from .common import CPP_HEADER_EXTENSIONS, CPP_IMPLEM_EXTENSIONS, CPP_FILE_EXTENSIONS
 
 def configure_libclang(libclang_path: Optional[str] = None):
     """Configure libclang library path if necessary
@@ -113,7 +116,7 @@ if not LIBCLANG_CONFIGURED:
 
 import clang.cindex
 from clang.cindex import CursorKind, TokenKind, TypeKind, AccessSpecifier, LinkageKind
-from entity import Entity
+from .entity import Entity
 
 # Map to track C++ language features by version
 CPP_FEATURES = {
@@ -1211,6 +1214,18 @@ def get_source_files_from_compilation_database(compilation_database):
     return list(files)
 
 def main():
+    # First check for version flag before enforcing other arguments
+    version_parser = argparse.ArgumentParser(add_help=False)
+    version_parser.add_argument('--version', action='store_true', help='Show version information and exit')
+    
+    # Parse only the version flag
+    version_args, _ = version_parser.parse_known_args()
+    
+    if version_args.version:
+        print(f"foamCD {get_version()}")
+        return 0
+    
+    # If not showing version, continue with normal argument parsing
     parser = argparse.ArgumentParser(description='Parse C++ files using libclang and extract documentation.')
     parser.add_argument('--generate-config', '-g', type=str, help='Generate default configuration file at specified path')
     parser.add_argument('--config', '-c', type=str, help='Path to YAML configuration file')
@@ -1220,6 +1235,7 @@ def main():
     parser.add_argument('--verbose', '-v', action='store_true', help='Enable verbose output')
     parser.add_argument('--test-libclang', action='store_true', help='Test libclang configuration and print diagnostic information')
     parser.add_argument('--debug-libclang', action='store_true', help='Enable detailed debug output for libclang configuration')
+    parser.add_argument('--version', action='store_true', help='Show version information and exit')
     
     # Plugin system options
     plugin_group = parser.add_argument_group('Plugin Options')
@@ -1232,6 +1248,11 @@ def main():
                          help='Only enable specified plugin, can be used multiple times')
     args = parser.parse_args()
     
+    # Version check is handled above, but keep this for completeness
+    if args.version:
+        print(f"foamCD {get_version()}")
+        return 0
+        
     if args.generate_config:
         Config.generate_default_config(args.generate_config)
         logger = setup_logging()

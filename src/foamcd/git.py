@@ -10,7 +10,7 @@ import subprocess
 from typing import List, Dict, Optional, Any
 import re
 
-from logs import setup_logging
+from .logs import setup_logging
 
 logger = setup_logging()
 

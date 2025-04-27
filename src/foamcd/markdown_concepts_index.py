@@ -4,12 +4,12 @@ import os
 import frontmatter
 from datetime import datetime
 from typing import Optional
-import logging
 
-from markdown_base import MarkdownGeneratorBase
-from config import Config
+from .markdown_base import MarkdownGeneratorBase
+from .config import Config
+from .logs import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 class ConceptsIndexGenerator(MarkdownGeneratorBase):
     """Generator for concepts index documentation"""

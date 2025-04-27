@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 
 import os
-import sys
 import importlib.util
 import inspect
-import logging
 from typing import Dict, List, Any, Type, Optional, Set
 from pathlib import Path
 
-from feature_detectors import FeatureDetector
+from .feature_detectors import FeatureDetector
+from .logs import setup_logging
 
-logger = logging.getLogger(__name__)
+logger = setup_logging()
 
 class PluginManager:
     """Manages DSL feature detector plugins and custom entity field definitions"""
