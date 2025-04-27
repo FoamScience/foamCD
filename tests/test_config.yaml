@@ -32,9 +32,3 @@ logging:
   level: DEBUG
   colored: true
   file: null
-
-features:
-  detect_inheritance: true
-  detect_virtuals: true
-  parse_doc_comments: true
-  access_level_grouping: true

@@ -35,11 +35,11 @@ namespace cpp_features_test {
 
 // Classes and inheritance are demonstrated throughout this file
 
-// Templates
+// Example function template
 template<typename T>
 T template_example(T value);
 
-// Exceptions
+// Example function with exceptions
 void exceptions_example();
 
 // Function overloading
@@ -109,16 +109,28 @@ void variadic_template_example(Args... args);
 // Virtual function with override (C++11)
 class BaseClass {
 public:
+    // This is a virtual function taking nothing
+    // @deprecated Use `virtualAbstractMethod()` instead to compute $K_c$
     virtual void virtualMethod();
+    // This is an anstract function here
     virtual void virtualAbstractMethod() = 0;
+    // Nice dtor
     virtual ~BaseClass();
-    static int countBases() { return 0; }
+    // Random static method
+    [[deprecated("Use `virtualMethod()` instead???")]]
+    static int countBases() { return 10; }
+    static int usesCountBases();
 };
 
-class DerivedClass : public BaseClass {
+class
+[[deprecated("Deprecating this class as functionality moved elsewhere")]]
+DerivedClass : public BaseClass {
 public:
+    // Delegating ctor
     DerivedClass() : BaseClass() {};
+    // Override for the virtual method in base
     void virtualMethod() override;
+    // Implement abstract method in base
     void virtualAbstractMethod() override;
 };
 
@@ -156,7 +168,8 @@ private:
 // Default and delete
 class DefaultDeleteExample {
 public:
-    DefaultDeleteExample();
+    // Defaulted, but in implementation
+    DefaultDeleteExample(); 
     DefaultDeleteExample(const DefaultDeleteExample&) = delete;
     // Canonical way to create a new DefaultDeleteExample object
     static std::unique_ptr<DefaultDeleteExample> New();

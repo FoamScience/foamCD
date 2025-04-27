@@ -15,6 +15,7 @@
 #include <type_traits>    // for type_traits
 #include <functional>     // for invoke
 #include <ranges>         // for views
+#include <iostream>
 
 #if __cplusplus >= 201703L
 #include <filesystem>    // for filesystem (C++17)
@@ -116,6 +117,11 @@ void range_for_example(const std::vector<int>& vec) {
 // Enum class implementation
 enum class ColorEnum { Red, Green, Blue };
 
+int BaseClass::usesCountBases() {
+    volatile auto res = countBases();
+    std::cout << res << std::endl;
+    return res;
+}
 // Final and override implementation
 void DerivedClass::virtualMethod() {
     // Override implementation
