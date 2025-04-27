@@ -100,6 +100,20 @@ To see all files references by entities in the database:
 ```
 These can help to craft `parser.prefixes_to_skip` and `markdown.dependencies` lists.
 
+## Markdown docs generation
+
+Generating the documentation in Markdown format for the project is then carried out as:
+```bash
+uvx foamcd-markdown --db docs.db --config example.yaml  --output <output_path>
+```
+
+
+Note that if you keep `docs.db` and the `<output_path>` between docs generations:
+- The parser will not parse files that were not modified since processing them into `docs.db`
+  - The database keeps a `last_modified` field for each source file, and it acts as a simple caching mechanism
+- The "content" of Markdown files will be preserved. Only the `frontmatter` will be overridden.
+  - This allows for customized documentation of specific entities.
+
 ## Testing
 
 To run the python unit-tests:
