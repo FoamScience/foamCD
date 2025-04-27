@@ -10,9 +10,9 @@ from unittest.mock import patch, MagicMock
 # Add project root to Python path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
 
-from logs import setup_logging
-from plugin_system import PluginManager
-from feature_detectors import FeatureDetector
+from foamcd.logs import setup_logging
+from foamcd.plugin_system import PluginManager
+from foamcd.feature_detectors import FeatureDetector
 
 logger = setup_logging(verbose=True).getChild('test')
 
@@ -185,7 +185,7 @@ class TestPluginSystem(unittest.TestCase):
         plugin_path = os.path.join(self.plugin_dir.name, "test_plugin.py")
         with open(plugin_path, "w") as f:
             f.write("""
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class DynamicTestDetector(FeatureDetector):
     entity_fields = {
@@ -234,7 +234,7 @@ class DynamicTestDetector(FeatureDetector):
         # Plugin 1 in root directory
         with open(os.path.join(self.plugin_dir.name, "plugin1.py"), "w") as f:
             f.write("""
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class Plugin1Detector(FeatureDetector):
     def __init__(self):
@@ -247,7 +247,7 @@ class Plugin1Detector(FeatureDetector):
         # Plugin 2 in subdirectory
         with open(os.path.join(self.plugin_dir.name, "subdir", "plugin2.py"), "w") as f:
             f.write("""
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class Plugin2Detector(FeatureDetector):
     def __init__(self):
@@ -287,7 +287,7 @@ class Plugin2Detector(FeatureDetector):
         plugin_path = os.path.join(self.plugin_dir.name, "error_plugin.py")
         with open(plugin_path, "w") as f:
             f.write("""
-from feature_detectors import FeatureDetector
+from foamcd.feature_detectors import FeatureDetector
 
 class ErrorDetector(FeatureDetector):
     def __init__(self):
@@ -328,7 +328,7 @@ class ErrorDetector(FeatureDetector):
         # This is an integration test that mocks database integration
         # In a real environment, this would connect to the actual database
         
-        from entity import Entity
+        from foamcd.entity import Entity
         from clang.cindex import CursorKind, AccessSpecifier
         
         # Create a mock entity

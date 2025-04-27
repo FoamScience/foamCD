@@ -7,11 +7,11 @@ import tempfile
 import uuid
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
-from logs import setup_logging
+from foamcd.logs import setup_logging
 
 logger = setup_logging(verbose=True).getChild('test.db')
 
-from db import EntityDatabase
+from foamcd.db import EntityDatabase
 
 class TestEntityDatabase(unittest.TestCase):
     """Test cases for the EntityDatabase class focusing on entity storage and retrieval"""

@@ -7,12 +7,11 @@ import tempfile
 import uuid
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
-from logs import setup_logging
+from foamcd.logs import setup_logging
 
 logger = setup_logging(verbose=True).getChild('test.decl_def_links')
 
-from db import EntityDatabase
-from entity import Entity
+from foamcd.db import EntityDatabase
 
 class TestDeclarationDefinitionLinks(unittest.TestCase):
     """Test cases for declaration-definition linking functionality"""

@@ -4,11 +4,11 @@ import unittest
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
-from logs import setup_logging
+from foamcd.logs import setup_logging
 
 logger = setup_logging(verbose=True).getChild('test.entity')
 
-from entity import Entity
+from foamcd.entity import Entity
 from clang.cindex import CursorKind, AccessSpecifier
 
 class TestEntity(unittest.TestCase):

@@ -4,13 +4,13 @@ import unittest
 import sys
 from pathlib import Path
 sys.path.append(str(Path(__file__).parent.parent.parent / "src"))
-from logs import setup_logging
+from foamcd.logs import setup_logging
 
 logger = setup_logging(verbose=True).getChild('test.features')
 
 try:
-    from parse import ClangParser, CPP_FEATURES, LIBCLANG_CONFIGURED
-    from config import Config
+    from foamcd.parse import ClangParser, CPP_FEATURES, LIBCLANG_CONFIGURED
+    from foamcd.config import Config
     test_config_path = str(Path(__file__).parent.parent / "test_config.yaml")
     test_config = Config(test_config_path)
     logger.info(f"Loaded test configuration from {test_config_path}")
