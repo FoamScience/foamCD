@@ -1214,7 +1214,22 @@ def get_source_files_from_compilation_database(compilation_database):
     return list(files)
 
 def main():
-    # First check for version flag before enforcing other arguments
+    # Extract any +key=value arguments before argparse sees them
+    override_args = []
+    cleaned_argv = []
+    overrides = {}
+    
+    for arg in sys.argv[1:]:
+        if arg.startswith('+') and '=' in arg:
+            override_args.append(arg)
+            key = arg[1:].split('=', 1)[0]
+            value = arg.split('=', 1)[1]
+            overrides[key] = value
+        else:
+            cleaned_argv.append(arg)
+    
+    original_argv = sys.argv.copy()
+    sys.argv = [sys.argv[0]] + cleaned_argv
     version_parser = argparse.ArgumentParser(add_help=False)
     version_parser.add_argument('--version', action='store_true', help='Show version information and exit')
     
@@ -1225,9 +1240,12 @@ def main():
         print(f"foamCD {get_version()}")
         return 0
     
-    # If not showing version, continue with normal argument parsing
-    parser = argparse.ArgumentParser(description='Parse C++ files using libclang and extract documentation.')
-    parser.add_argument('--generate-config', '-g', type=str, help='Generate default configuration file at specified path')
+    parser = argparse.ArgumentParser(description='Parse C++ files using libclang and extract documentation.',
+                                   formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument('--generate-config', '-g', type=str, 
+                      help='Generate default configuration file at specified path.\n'
+                           'Can be combined with overrides using +key=value syntax, for example:\n'
+                           '  --generate-config config.yaml +database.path=/tmp/docs.db +markdown.project_name="My Project"')
     parser.add_argument('--config', '-c', type=str, help='Path to YAML configuration file')
     parser.add_argument('--compile-commands-dir', type=str, help='Path to directory containing compile_commands.json, overrides the YAML config')
     parser.add_argument('--output', '-o', type=str, help='Output SQLite database file, overrides the YAML config')
@@ -1254,9 +1272,14 @@ def main():
         return 0
         
     if args.generate_config:
-        Config.generate_default_config(args.generate_config)
+        Config.generate_default_config(args.generate_config, overrides)
         logger = setup_logging()
-        logger.info(f"Generated default configuration at {args.generate_config}")
+        if overrides:
+            logger.info(f"Generated default configuration at {args.generate_config} with {len(overrides)} overrides")
+            for key, value in overrides.items():
+                logger.info(f"  {key} = {value}")
+        else:
+            logger.info(f"Generated default configuration at {args.generate_config}")
         return 0
         
     config_obj = Config(args.config)

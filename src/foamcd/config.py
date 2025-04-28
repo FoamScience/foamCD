@@ -162,21 +162,53 @@ class Config:
             return False
     
     @staticmethod
-    def generate_default_config(path: str) -> bool:
-        """Generate default configuration file
+    def generate_default_config(path: str, overrides: dict = None) -> bool:
+        """Generate default configuration file with optional overrides
         
         Args:
             path: Path to save default configuration
+            overrides: Dictionary of dot-notation paths to override (e.g., {'database.path': '/tmp/db.sqlite'})
             
         Returns:
             True if successful, False otherwise
         """
         try:
+            config = OmegaConf.create(DEFAULT_CONFIG)
+            if overrides:
+                for key, value in overrides.items():
+                    try:
+                        import json
+                        if (isinstance(value, str) and 
+                            ((value.startswith('[') and value.endswith(']')) or
+                             (value.startswith('{') and value.endswith('}')))):
+                            try:
+                                value = json.loads(value.replace("'", "\""))
+                            except json.JSONDecodeError:
+                                pass
+                        elif isinstance(value, str):
+                            if value.lower() == 'true':
+                                value = True
+                            elif value.lower() == 'false':
+                                value = False
+                            elif value.isdigit():
+                                value = int(value)
+                            elif value.replace('.', '', 1).isdigit() and value.count('.') == 1:
+                                value = float(value)
+                            elif ',' in value and not (value.startswith('/') or value.startswith('./')):
+                                value = [item.strip() for item in value.split(',')]
+                        OmegaConf.update(config, key, value)
+                        logger.info(f"Overriding {key} = {value}")
+                    except Exception as e:
+                        logger.warning(f"Failed to override {key} = {value}: {e}")
+                        
             with open(path, 'w') as f:
-                yaml.dump(DEFAULT_CONFIG, f, default_flow_style=False)
-            logger.info(f"Generated default configuration at {path}")
+                yaml.dump(OmegaConf.to_container(config), f, default_flow_style=False)
+                
+            logger.info(f"Generated configuration at {path}")
+            if overrides:
+                logger.info(f"Applied {len(overrides)} custom overrides")
             return True
         except Exception as e:
             import traceback
-            logger.error(f"Error generating default configuration: {e}\nTraceback: {traceback.format_exc()}")
+            logger.error(f"Error generating configuration: {e}\nTraceback: {traceback.format_exc()}")
             return False
