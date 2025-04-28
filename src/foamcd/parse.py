@@ -214,7 +214,14 @@ class ClangParser:
                 raise ValueError(f"Error loading compilation database: {e}")
         
     def get_compile_commands(self, filepath: str) -> List[str]:
-        """Get compilation arguments for a file from the compilation database"""
+        """Get compilation arguments for a file from the compilation database
+        
+        If the compilation database uses the 'arguments' field (rather than 'command'),
+        it will scan the arguments for include paths and other file paths, making any
+        relative paths absolute based on the 'directory' field in the database entry.
+
+        Why? because that's the current format of Bear's compile_commands.json files.
+        """
         try:
             if hasattr(self, 'compilation_database'):
                 commands = self.compilation_database.getCompileCommands(filepath)
@@ -222,15 +229,23 @@ class ClangParser:
                     all_args = []
                     for command in commands:
                         try:
+                            command_dir = command.directory if hasattr(command, 'directory') else None
                             if hasattr(command, 'arguments') and isinstance(command.arguments, list):
-                                all_args.extend(command.arguments[1:])
+                                args = command.arguments[1:] if len(command.arguments) > 1 else []
+                                if command_dir:
+                                    args = [_normalize_path_in_argument(arg, command_dir) for arg in args]
+                                all_args.extend(args)
                             elif hasattr(command, 'arguments'):
                                 args = list(command.arguments)
                                 if args and len(args) > 1:
-                                    all_args.extend(args[1:])
+                                    args = args[1:]
+                                    if command_dir:
+                                        args = [_normalize_path_in_argument(arg, command_dir) for arg in args]
+                                    all_args.extend(args)
                         except (IndexError, TypeError) as e:
                             logger.debug(f"Could not extract arguments from command: {e}")
                     if all_args:
+                        logger.debug(f"Using compilation arguments from database: {all_args[:5]}...")
                         return all_args
         except Exception as e:
             logger.warning(f"Error getting compilation commands for {filepath}: {e}")
@@ -1170,6 +1185,28 @@ class ClangParser:
         db.store_entity(entity_dict)
         for child in entity.children:
             self._export_entity(db, child)
+
+def _normalize_path_in_argument(arg, base_dir):
+    """Normalize paths in compilation arguments to be absolute
+    
+    Args:
+        arg: The argument string
+        base_dir: Base directory to use for relative paths
+        
+    Returns:
+        Normalized argument with absolute paths
+    """
+    include_prefixes = ('-I', '-isystem', '-include', '-iquote', '-isysroot')
+    for prefix in include_prefixes:
+        if arg.startswith(prefix) and len(arg) > len(prefix):
+            path = arg[len(prefix):]
+            if not os.path.isabs(path):
+                normalized_path = os.path.normpath(os.path.join(base_dir, path))
+                return f"{prefix}{normalized_path}"
+    if not arg.startswith('-') and ('/' in arg or '\\' in arg):
+        if not os.path.isabs(arg):
+            return os.path.normpath(os.path.join(base_dir, arg))
+    return arg
 
 def get_source_files_from_compilation_database(compilation_database):
     """Extract source files from compilation database
