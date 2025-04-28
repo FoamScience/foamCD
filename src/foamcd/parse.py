@@ -369,6 +369,8 @@ class ClangParser:
                 line = line[2:]
             elif line.startswith('*'):
                 line = line[1:]
+            elif line.startswith('///'):
+                continue
             elif line.startswith('//'):
                 line = line[2:]
             processed_lines.append(line.strip())

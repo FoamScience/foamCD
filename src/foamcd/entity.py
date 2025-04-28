@@ -95,6 +95,11 @@ class Entity:
             
         result = {
             'description': '',
+            'brief': '',
+            'note': '',
+            'warning': '',
+            'todo': '',
+            'attention': '',
             'params': {},
             'returns': '',
             'throws': [],
@@ -106,64 +111,66 @@ class Entity:
         
         doc_comment = re.sub(r'^\s*[/\*]+\s*', '', doc_comment, flags=re.MULTILINE)
         doc_comment = re.sub(r'\s*\*+[/]?\s*$', '', doc_comment, flags=re.MULTILINE)
-        lines = doc_comment.split('\n')
-        desc_lines = []
-        i = 0
-        while i < len(lines):
-            line = lines[i].strip()
-            if re.match(r'^[@\\][a-zA-Z]+\b', line):
-                break
-            desc_lines.append(line)
-            i += 1
-        description = '\n'.join(desc_lines).strip()
-        if not description and doc_comment:
-            result['description'] = doc_comment.strip()
-            return result
-            
-        result['description'] = description
-        current_tag = None
+        lines = [line.strip() for line in doc_comment.split('\n')]
+        tag_blocks = {}
+        current_tag = 'description'
         current_content = []
-        while i < len(lines):
-            line = lines[i].strip()
-            i += 1
-            tag_match = re.match(r'[@\\](\w+)\s*(.*)', line)
+        
+        for line in lines:
+            tag_match = re.match(r'^[@\\](\w+)\s*(.*)', line)
             if tag_match:
                 if current_tag and current_content:
-                    self._add_tag_to_result(result, current_tag, '\n'.join(current_content).strip())
+                    if current_tag not in tag_blocks:
+                        tag_blocks[current_tag] = []
+                    tag_blocks[current_tag].append('\n'.join(current_content).strip())
+                    current_content = []
                 current_tag = tag_match.group(1).lower()
-                current_content = [tag_match.group(2)] if tag_match.group(2) else []
+                content = tag_match.group(2)
+                if content:
+                    current_content.append(content)
             elif current_tag:
                 current_content.append(line)
         if current_tag and current_content:
-            self._add_tag_to_result(result, current_tag, '\n'.join(current_content).strip())
-        if not result['description'] and doc_comment:
-            result['description'] = doc_comment.strip()
+            if current_tag not in tag_blocks:
+                tag_blocks[current_tag] = []
+            tag_blocks[current_tag].append('\n'.join(current_content).strip())
+        for tag, contents in tag_blocks.items():
+            for content in contents:
+                if tag == 'description':
+                    result['description'] = content
+                elif tag == 'brief':
+                    result['brief'] = content
+                elif tag == 'note':
+                    result['note'] = content
+                elif tag == 'warning':
+                    result['warning'] = content
+                elif tag == 'todo':
+                    result['todo'] = content
+                elif tag == 'attention':
+                    result['attention'] = content
+                elif tag in ('param', 'parameter', 'arg', 'argument'):
+                    param_match = re.match(r'(\w+)\s+(.*)', content, re.DOTALL)
+                    if param_match:
+                        param_name = param_match.group(1)
+                        param_desc = param_match.group(2)
+                        result['params'][param_name] = param_desc
+                elif tag in ('return', 'returns'):
+                    result['returns'] = content
+                elif tag in ('throws', 'throw', 'exception'):
+                    result['throws'].append(content)
+                elif tag == 'see':
+                    result['see'].append(content)
+                elif tag == 'deprecated':
+                    result['deprecated'] = content
+                    self.is_deprecated = True
+                elif tag == 'since':
+                    result['since'] = content
+                else:
+                    if tag not in result['tags']:
+                        result['tags'][tag] = []
+                    result['tags'][tag].append(content)
         return result
     
-    def _add_tag_to_result(self, result: Dict[str, Any], tag: str, content: str):
-        """Add parsed tag content to the appropriate place in the result"""
-        if tag in ('param', 'parameter', 'arg', 'argument'):
-            param_match = re.match(r'(\w+)\s+(.*)', content, re.DOTALL)
-            if param_match:
-                param_name = param_match.group(1)
-                param_desc = param_match.group(2)
-                result['params'][param_name] = param_desc
-        elif tag in ('return', 'returns'):
-            result['returns'] = content
-        elif tag in ('throws', 'throw', 'exception'):
-            result['throws'].append(content)
-        elif tag == 'see':
-            result['see'].append(content)
-        elif tag == 'deprecated':
-            result['deprecated'] = content
-            self.is_deprecated = True
-        elif tag == 'since':
-            result['since'] = content
-        else:
-            if tag not in result['tags']:
-                result['tags'][tag] = []
-            result['tags'][tag].append(content)
-        
     def _generate_uuid(self) -> str:
         """Generate a UUID by hashing the entity's content"""
         content = (

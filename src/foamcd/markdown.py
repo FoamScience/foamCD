@@ -82,7 +82,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             try:
                 transformed_defs = []
                 for def_file in entity_copy['definition_files']:
-                    transformed_def, _ = self._transform_file_path(def_file, name)
+                    transformed_def, _ = self._transform_file_path(def_file, name, template_pattern="filename_uri", entity=entity_copy)
                     transformed_defs.append(transformed_def)
                 entity_copy['definition_files'] = transformed_defs
             except Exception as e:
@@ -196,7 +196,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 "layout": "class",
                 "weight": 20,
                 "date": datetime.now().strftime("%Y-%m-%d"),
-                "description": entity.get("doc_comment", "") or f"API documentation for {class_name}",
+                "description": (entity.get("documentation", {}).get("brief", "") or 
+                               entity.get("documentation", {}).get("description", "") or 
+                               f"API documentation for {class_name}"),
                 "categories": [
                     "api",
                     f"{self.config.get('markdown.project_name')} API"
@@ -233,40 +235,22 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             
             if self.config.get("markdown", {}).get("frontmatter", {}).get("entities", {}).get("contributors_from_git", False):
                 frontmatter_data["contributors"] = self._get_entity_contributors(entity)
+            content = ""
             if os.path.exists(file_path):
                 try:
                     with open(file_path, 'r') as f:
                         post = frontmatter.load(f)
                     content = post.content
-                    
-                    # Handle the foamCD section if it exists
+                    logger.debug(f"Preserved content from existing entity page: {filename}")
                     if 'foamCD' in post and isinstance(post['foamCD'], dict):
                         existing_foamcd = post['foamCD']
                         if 'class_info' in existing_foamcd:
                             del existing_foamcd['class_info']
-                        frontmatter_data['foamCD'].update(existing_foamcd)
-                    
-                    try:
-                        for key, value in post.items():
-                            if key != 'foamCD' and key != 'content':
-                                frontmatter_data[key] = value
-                    except AttributeError:
-                        if hasattr(post, 'metadata') and isinstance(post.metadata, dict):
-                            for key, value in post.metadata.items():
-                                if key != 'foamCD':
-                                    frontmatter_data[key] = value
-                        else:
-                            for key in ['title', 'date', 'weight', 'draft', 'toc']:
-                                if hasattr(post, key) or (isinstance(post, dict) and key in post):
-                                    try:
-                                        frontmatter_data[key] = post[key]
-                                    except (TypeError, KeyError):
-                                        if hasattr(post, key):
-                                            frontmatter_data[key] = getattr(post, key)
-                    logger.debug(f"Updating existing entity page: {filename}")
+                        for k, v in existing_foamcd.items():
+                            if k not in frontmatter_data['foamCD']:
+                                frontmatter_data['foamCD'][k] = v
                 except Exception as e:
-                    logger.warning(f"Error processing existing entity file {filename}: {e}")
-                    content = ""
+                    logger.warning(f"Error reading existing entity file {filename}: {e}")
             else:
                 content = ""
                 logger.debug(f"Creating new entity page: {filename}")
@@ -413,10 +397,24 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             for field in ["description", "returns", "deprecated", "since"]:
                 if field in doc and doc[field]:
                     result[field] = doc[field]
+            result["tags"] = {}
+            for tag_name in ["brief", "note", "warning", "todo", "attention"]:
+                if tag_name in doc and doc[tag_name]:
+                    result["tags"][tag_name] = doc[tag_name]
+            if "tags" in doc and isinstance(doc["tags"], dict):
+                result["tags"].update(doc["tags"])
+            if not result["tags"]:
+                del result["tags"]
             if "params" in doc and isinstance(doc["params"], dict):
                 result["params"] = doc["params"]
         if not result["description"] and entity.get("doc_comment"):
-            result["description"] = entity["doc_comment"]
+            doc_comment = entity["doc_comment"]
+            desc_lines = []
+            for line in doc_comment.split('\n'):
+                if re.match(r'^[@\\][a-zA-Z]+\b', line.strip()):
+                    break
+                desc_lines.append(line)
+            result["description"] = '\n'.join(desc_lines).strip() or doc_comment
             
         if entity.get("deprecated_message") and not result["deprecated"]:
             result["deprecated"] = entity.get("deprecated_message")
@@ -584,6 +582,11 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             formatted_info["documentation"]["description"] = doc.get("description", "")
             formatted_info["documentation"]["returns"] = doc.get("returns", "")
             formatted_info["documentation"]["since"] = doc.get("since", "")
+            for tag_name in ["brief", "note", "warning", "todo", "attention"]:
+                if tag_name in doc and doc[tag_name]:
+                    if "tags" not in formatted_info["documentation"]:
+                        formatted_info["documentation"]["tags"] = {}
+                    formatted_info["documentation"]["tags"][tag_name] = doc[tag_name]
             if "params" in doc and parameters:
                 param_docs = doc.get("params", {})
                 for param in formatted_info["parameters"]:

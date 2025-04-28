@@ -49,14 +49,13 @@ class MarkdownGeneratorBase:
             self.output_path = os.path.abspath('output')
             logger.warning(f"No output path provided, using default: {self.output_path}")
             
-        if project_dir and not os.path.isabs(project_dir):
+        self.config_path = config_path
+        self.config = config_object if config_object is not None else (Config(config_path) if config_path else None)
+        if project_dir:
             self.project_dir = os.path.abspath(project_dir)
             logger.debug(f"Normalized relative project_dir to absolute: {self.project_dir}")
         else:
-            self.project_dir = project_dir
-            
-        self.config_path = config_path
-        self.config = config_object if config_object is not None else (Config(config_path) if config_path else None)
+            self.project_dir = self.config.get("parser.compile_commands_dir", None)
         self.db = EntityDatabase(db_path)
         self.project_name = os.path.basename(project_dir) if project_dir else "C++ Project"
         if self.config and hasattr(self.config, 'config'):
@@ -106,6 +105,7 @@ class MarkdownGeneratorBase:
             return file_path, None
         if not file_path:
             return file_path, None
+        untemplated_name = name.split('<')[0]
 
         context = {
             'start_line': 1,
@@ -113,9 +113,9 @@ class MarkdownGeneratorBase:
             'base_url': None,
             'file_path': None,
             'full_path': None,
-            'git_reference': None,
-            'git_repository': None,
-            'name': name,
+            'git_reference': '',
+            'git_repository': '',
+            'name': untemplated_name,
             'namespace': namespace.replace('::', '_') if namespace else None,
             'project_name': None, 
             'project_dir': None,
@@ -142,15 +142,15 @@ class MarkdownGeneratorBase:
         file_path_base = file_path.split('#')[0] if '#' in file_path else file_path
         context['full_path'] = file_path_base
 
+        file_folder = os.path.dirname(file_path_base)
         if self.project_dir and file_path_base.startswith(self.project_dir):
             context['base_url'] = markdown_config.get('base_url', get_git_repo_url(file_folder))
             rel_path = get_relative_path_from_git_root(file_path_base)
             if not rel_path and self.project_dir:
                 rel_path = os.path.relpath(file_path_base, self.project_dir)
             context['file_path'] = rel_path
-            file_folder = os.path.dirname(file_path_base)
-            context['git_reference'] =  markdown_config.get('git_reference', get_git_reference(file_folder)),
-            context['git_repository'] =  markdown_config.get('git_reference', get_git_repo_url(file_folder)),
+            context['git_reference'] = markdown_config.get("git_reference") if markdown_config.get("git_reference") else get_git_reference(file_folder)
+            context['git_repository'] = markdown_config.get("git_repository") if markdown_config.get("git_repository") else get_git_repo_url(file_folder)
             context['project_dir'] = self.project_dir
             context['project_name'] = markdown_config.get('project_name', '')
             try:
@@ -205,7 +205,7 @@ class MarkdownGeneratorBase:
         Returns:
             Transformed URI based on template pattern or default URI if no template
         """
-        if 'uri' in entity:
+        if 'uri' in entity and entity['uri']:
             return entity['uri']
         markdown_config = self.config.config.get('markdown', {})
         entity_kind = entity.get('kind', '')
@@ -227,7 +227,7 @@ class MarkdownGeneratorBase:
         
         try:
             context = {
-                'name': entity.get('name', ''),
+                'name': entity.get('name', '').split('<')[0],
                 'namespace': entity.get('namespace', '').replace('::', '_'),
                 'kind': entity_kind,
                 'file_path': entity.get('file', ''),
@@ -257,11 +257,11 @@ class MarkdownGeneratorBase:
         if 'file' in result:
             result['file'], _ = self._transform_file_path(result['file'], name, namespace)
         if 'declaration_file' in result:
-            result['declaration_file'], _ = self._transform_file_path(result['declaration_file'], name, namespace)
+            result['declaration_file'], _ = self._transform_file_path(result['declaration_file'], name, namespace, template_pattern="filename_uri")
         if 'definition_files' in result:
             transformed_def_files = []
             for def_file in result['definition_files']:
-                tmp_file, _ = self._transform_file_path(def_file, name, namespace)
+                tmp_file, _ = self._transform_file_path(def_file, name, namespace, template_pattern="filename_uri")
                 transformed_def_files.append(tmp_file)
             result['definition_files'] = transformed_def_files
         if 'children' in result and isinstance(result['children'], list):

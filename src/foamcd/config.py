@@ -20,8 +20,12 @@ DEFAULT_CONFIG = {
         # Possible context for doc_uri: name, namespace, start_line, end_line, base_url, file_path, full_path,
         # git_reference, git_repository, project_name, project_dir
         "doc_uri": "/api/{{namespace}}_{{name}}", # URI for entities docs
-        "methoddoc_uri": "/api/{{namespace}}_{{parent_name}}", # URI for entities docs
-        "url_mapping": [ # List of external dependencies, NOT YET ACTIVE
+        "filename_uri": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}", # URI for files
+        "method_doc_uri": "/api/{{namespace}}_{{parent_name}}", # URI for entities docs
+        "url_mappings_ignore": [ # List of paths to skip mapping, eg. those which are already mapped
+            "/api"
+        ],
+        "url_mappings": [ # List of external dependencies,
             {
                 "path": [ # Paths to consider as depencies
                     "/usr/include",
@@ -138,7 +142,9 @@ class Config:
             Configuration value or default
         """
         try:
-            return OmegaConf.select(self.config, key)
+            if OmegaConf.select(self.config, key):
+                return OmegaConf.select(self.config, key)
+            return default
         except Exception:
             return default
     
