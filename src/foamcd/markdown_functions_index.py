@@ -85,6 +85,10 @@ class FunctionsIndexGenerator(MarkdownGeneratorBase):
             processed_function_stats.append(processed_entity)
         flattened_function_stats = FunctionHierarchyFlattener.flatten_function_stats(processed_function_stats)
         
+        if not processed_function_stats:
+            logger.info("No free functions found in project scope, skipping functions.md file generation")
+            return
+
         logger.debug(f"Found {len(processed_function_stats)} function groups in project scope with {len(flattened_function_stats)} total functions")
         
         default_metadata = {

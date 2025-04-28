@@ -1280,7 +1280,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             try:
                 logger.info(f"Creating unit tests database at {unit_tests_db_path} from {unit_tests_dir}")
                 
-                from config import Config
+                from .config import Config
                 if self.config:
                     if self.config_path and os.path.exists(self.config_path):
                         unit_tests_config = Config(self.config_path)
@@ -1298,9 +1298,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     config_dict['database'] = {}
                 config_dict['database']['path'] = unit_tests_db_path
                 unit_tests_config.config = OmegaConf.create(config_dict)
-                from db import EntityDatabase
+                from .db import EntityDatabase
+                from .parse import ClangParser, get_source_files_from_compilation_database
                 unit_tests_db = EntityDatabase(unit_tests_db_path, create_tables=True)
-                from parse import ClangParser, get_source_files_from_compilation_database
                 parser = ClangParser(
                     compilation_database_dir=unit_tests_dir,
                     db=unit_tests_db,
@@ -1389,7 +1389,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 unit_tests_db = MarkdownGenerator._unit_tests_db_cache[unit_tests_db_path]
                 logger.debug(f"Using cached unit tests database from {unit_tests_db_path}")
             else:
-                from db import EntityDatabase
+                from .db import EntityDatabase
                 unit_tests_db = EntityDatabase(unit_tests_db_path)
                 MarkdownGenerator._unit_tests_db_cache[unit_tests_db_path] = unit_tests_db
                 if MarkdownGenerator._verbose_unit_tests_logging:
@@ -1816,7 +1816,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         Returns:
             List of contributor names
         """
-        from git import get_file_authors_by_line_range, is_git_repository
+        from .git import get_file_authors_by_line_range, is_git_repository
         
         contributors = set()
         file_path = entity.get('file')

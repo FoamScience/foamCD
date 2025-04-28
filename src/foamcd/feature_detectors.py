@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 
-import logging
 from typing import List
 
 from clang.cindex import CursorKind

@@ -58,6 +58,11 @@ class ConceptsIndexGenerator(MarkdownGeneratorBase):
             processed_concept_stats.append(processed_entity)
             
         logger.debug(f"Found {len(processed_concept_stats)} concepts in project scope")
+        
+        if not processed_concept_stats:
+            logger.info("No concepts found in project scope, skipping concepts.md file generation")
+            return
+        
         default_metadata = {
             "title": f"{self.project_name} Concepts",
             "description": f"C++ concept reference documentation for {self.project_name}",

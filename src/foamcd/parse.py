@@ -5,13 +5,11 @@ import sys
 import hashlib
 import argparse
 import platform
-import tomli
-import importlib.metadata
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any, Union
+from typing import Dict, List, Optional, Set, Any
 
 try:
-    from tree_sitter_subparser import TreeSitterSubparser, is_tree_sitter_available
+    from .tree_sitter_subparser import TreeSitterSubparser, is_tree_sitter_available
     TREE_SITTER_IMPORT_SUCCESS = True
 except ImportError:
     TREE_SITTER_IMPORT_SUCCESS = False
@@ -245,8 +243,51 @@ class ClangParser:
                         except (IndexError, TypeError) as e:
                             logger.debug(f"Could not extract arguments from command: {e}")
                     if all_args:
-                        logger.debug(f"Using compilation arguments from database: {all_args[:5]}...")
-                        return all_args
+                        # add include paths from config, eg. to point to clang sys-includes
+                        # also, remove the source file from the arguments, will be replaced 
+                        # by its absolute path
+                        include_paths = self.config.get('parser.include_paths', [])
+                        if include_paths:
+                            last_include_index = -1
+                            for i, arg in enumerate(all_args):
+                                if arg.startswith('-I'):
+                                    last_include_index = i
+                            additional_args = []
+                            for include_path in include_paths:
+                                include_arg = f"-I{include_path}"
+                                if include_arg not in all_args:
+                                    additional_args.append(include_arg)
+                                    logger.debug(f"Adding include path from config: {include_arg}")
+                            
+                            if additional_args:
+                                if last_include_index >= 0:
+                                    all_args[last_include_index+1:last_include_index+1] = additional_args
+                                    logger.debug(f"Inserted {len(additional_args)} include paths after existing include at position {last_include_index}")
+                                else:
+                                    all_args = additional_args + all_args
+                                    logger.debug(f"Inserted {len(additional_args)} include paths at beginning of arguments")
+                        filename = os.path.basename(filepath)
+                        filepath_abs = os.path.abspath(filepath)
+                        filtered_args = []
+                        skip_next = False
+                        for i, arg in enumerate(all_args):
+                            if skip_next:
+                                skip_next = False
+                                continue
+                            if arg == filename or arg == filepath or arg == filepath_abs:
+                                logger.debug(f"Removed filename '{arg}' from arguments")
+                                continue
+                            if i < len(all_args) - 1 and arg in ('-c', '-o', '-MF', '-MT', '-MQ'):
+                                next_arg = all_args[i+1]
+                                if next_arg == filename or next_arg == filepath or next_arg == filepath_abs:
+                                    filtered_args.append(arg)  # Keep the flag
+                                    skip_next = True          # Skip the filename
+                                    logger.debug(f"Removed filename '{next_arg}' after flag '{arg}'")
+                                    continue
+                                    
+                            filtered_args.append(arg)
+                        logger.debug(f"Using compilation arguments from database: {filtered_args[:5]}...")
+                        return filtered_args
         except Exception as e:
             logger.warning(f"Error getting compilation commands for {filepath}: {e}")
         
@@ -1126,7 +1167,7 @@ class ClangParser:
         Returns:
             List of Entity objects representing the parsed entities
         """
-        from entity import Entity
+        from .entity import Entity
         entities = []
         
         for class_info in tree_sitter_result.get("classes", []):
@@ -1203,8 +1244,21 @@ def _normalize_path_in_argument(arg, base_dir):
             if not os.path.isabs(path):
                 normalized_path = os.path.normpath(os.path.join(base_dir, path))
                 return f"{prefix}{normalized_path}"
-    if not arg.startswith('-') and ('/' in arg or '\\' in arg):
-        if not os.path.isabs(arg):
+    
+    io_prefixes = ('-o', '-c', '-MF', '-MT', '-MQ', '@')
+    for prefix in io_prefixes:
+        if arg == prefix:
+            return arg
+        if arg.startswith(prefix) and len(arg) > len(prefix):
+            path = arg[len(prefix):]
+            if path and not os.path.isabs(path) and ('/' in path or '\\' in path):
+                normalized_path = os.path.normpath(os.path.join(base_dir, path))
+                return f"{prefix}{normalized_path}"
+    if not arg.startswith('-'):
+        file_extensions = tuple(CPP_FILE_EXTENSIONS)
+        has_path_sep = '/' in arg or '\\' in arg
+        is_possible_file = arg.endswith(file_extensions) or has_path_sep
+        if is_possible_file and not os.path.isabs(arg):
             return os.path.normpath(os.path.join(base_dir, arg))
     return arg
 
