@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
         "doc_uri": "/api/{{namespace}}_{{name}}", # URI for entities docs
         "filename_uri": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}", # URI for files
         "method_doc_uri": "/api/{{namespace}}_{{parent_name}}", # URI for entities docs
+        "unit_test_uri": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}", # URI for unit tests
         "url_mappings_ignore": [ # List of paths to skip mapping, eg. those which are already mapped
             "/api"
         ],
@@ -67,7 +68,6 @@ DEFAULT_CONFIG = {
                 ],
                 "unit_tests": True,                       # Refer to potential unit tests in class descriptions
                 "unit_tests_compile_commands_dir": None,  # Path to compile_commands folder for the unit testing code
-                "unit_test_linkage_pattern": "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}",
                 "knowledge_requirements": True,           # Overview of C++ features an entity leverage
                 "contributors_from_git": True,            # Contributers list from Git
             },
@@ -89,6 +89,15 @@ DEFAULT_CONFIG = {
             "/usr/include",
             "/usr/lib",
             "/usr/include/x86_64-linux-gnu"
+        ],
+        "entities_to_skip": [         # Regexps for entity names to skip recording to DB, can be dangerous
+            "add.*ToDebug",
+            "add.*ToTable",
+            ".*ConstructorCompatTable",
+            ".*ConstructorTable",
+            "member",
+            "__.*",
+            ".*__",
         ],
         "plugins": {
             "enabled": True,          # Whether to enable the plugin system

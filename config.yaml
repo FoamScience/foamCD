@@ -1,8 +1,11 @@
+## This is an example config
+## BUT using foamcd-parse --generate-config is preferred
+## It accepts overrides like +parser.compile_commands_dir=/path/to/json/file
 parser:
   # Path to libclang library (leave null for auto-detection)
   libclang_path: null
   # Path to compilation database directory, preferred mode of operation
-  compile_commands_dir: /home/fadeli/repos/foamCD/
+  compile_commands_dir: null
   # Directories to skip when parsing (these must be absolute paths)
   # You don't want to sit around waiting for parsing the whole STL lib
   # But the parser is aggressive and thorough, so what needs to be skipped
@@ -15,6 +18,17 @@ parser:
     - "/usr/include/x86_64-linux-gnu"
     - "/usr/include/x86_64-linux-gnu/c++/13"
     - "/usr/lib/gcc/x86_64-linux-gnu/13/include"
+  # Entities to skip recording to DB, good for hyper metadata stuff
+  # like things defined through macros and are not usually visible
+  # to the end user.
+  entities_to_skip:
+    - "add.*ToDebug"
+    - "add.*ToTable"
+    - ".*ConstructorCompatTable"
+    - ".*ConstructorTable"
+    - "member"
+    - "__.*"
+    - ".*__"
   # Custom folders to load DSL plugins from
   plugin_dirs: []
   # Plugin toggles
@@ -29,7 +43,7 @@ parser:
   # These are also not well tested...
   # C++ standard version to use (optional)
   cpp_standard: c++20
-  # Additional include paths for compilation (optional)
+  # Additional include paths for compilation (optional, works with compile_commands_dir too)
   include_paths: [
     "/usr/include",
     "/usr/include/c++/13",
@@ -76,6 +90,10 @@ markdown:
   doc_uri: /api/{{namespace}}_{{name}}
   # method_doc_uri specializes the mapping for class methods
   method_doc_uri: /api/{{namespace}}_{{parent_name}}
+  # filename_uri specializes the mapping for files outside of project tree
+  filename_uri: "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}"
+  # unit_test_uri specializes the mapping for unit testing cases
+  unit_test_uri: "{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}"
   # Optional base URL for main project; leave empty to make Hugo work things out
   project_base_url: null
   # Optional active Git reference (tag, branch or commit)
@@ -94,7 +112,7 @@ markdown:
     pattern: '{{base_url}}/{{name}}'
   - base_url: ""
     path:
-    - /home/fadeli/repos/foamCD
+    - ~/repos/foamCD
     pattern: '{{base_url}}/api/{{namespace}}_{{name}}'
   # Control over Markdown frontmatter
   frontmatter:
@@ -114,10 +132,8 @@ markdown:
       knowledge_requirements: true
       # Toggle unit tests tracking for entities
       unit_tests: true
-      # Unit test Jinja2 Pattern; similar to doc_uri
-      unit_test_linkage_pattern: '{{git_repository}}/blob/{{git_reference}}/{{file_path}}#L{{start_line}}-L{{end_line}}'
       # How to look for unit test  files
-      unit_tests_compile_commands_dir: /home/fadeli/repos/foamCD/tests/fixtures_unit_tests
+      unit_tests_compile_commands_dir: null
     # The index pages
     index:
       # Generate an index for classes
