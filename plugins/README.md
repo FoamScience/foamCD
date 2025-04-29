@@ -43,6 +43,13 @@ These fields will be automatically registered when your plugin is loaded.
 
 ## Advanced Detection Results
 
+> [!IMPORTANT]
+> If plugins are enabled, the clang parser exposes itself as the `CURRENT_PARSER`
+> global variable:
+> ```python
+> from foamcd.parse import CURRENT_PARSER
+> ```
+
 Your detector's `detect` method can return:
 
 1. A boolean value (simple detection)

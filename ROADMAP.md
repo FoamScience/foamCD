@@ -12,6 +12,7 @@ are most welcome.
     - [x] Single/multiple inheritance
     - [x] Access specifiers
     - [ ] Subclasses
+    - [ ] class/struct member data
   - [x] Templates
     - [x] Function templates
     - [x] Class templates
