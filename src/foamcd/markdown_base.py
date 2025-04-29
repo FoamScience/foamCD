@@ -10,7 +10,7 @@ from jinja2 import Template
 from .logs import setup_logging
 from .config import Config
 from .db import EntityDatabase
-from .git import get_git_repo_url, get_git_reference, get_relative_path_from_git_root
+from .git import get_git_repo_url, get_git_reference, get_git_root, get_relative_path_from_git_root, is_git_repository
 
 logger = setup_logging()
 
@@ -91,6 +91,11 @@ class MarkdownGeneratorBase:
             file_path: The original file path
             name: Optional name of the entity for template variables
             namespace: Optional namespace of the entity for template variables
+            template_pattern: either:
+                - "doc_uri" for things that we document, and want to link to their documentation
+                - "filename_uri" for things that we don't document, and want to link to their implementation
+                - "method_doc_uri" for class methods
+                - "unit_test_uri" for linking unit tests
             
         Returns:
             Transformed file path or original path if no transformation applied
@@ -143,11 +148,15 @@ class MarkdownGeneratorBase:
         context['full_path'] = file_path_base
 
         file_folder = os.path.dirname(file_path_base)
-        if self.project_dir and file_path_base.startswith(self.project_dir):
+        git_root = self.project_dir if self.project_dir == get_git_root(self.project_dir) else get_git_root(file_folder)
+
+        if template_pattern=="unit_test_uri" or (
+            self.project_dir and file_path_base.startswith(self.project_dir)
+        ):
             context['base_url'] = markdown_config.get('base_url', get_git_repo_url(file_folder))
             rel_path = get_relative_path_from_git_root(file_path_base)
             if not rel_path and self.project_dir:
-                rel_path = os.path.relpath(file_path_base, self.project_dir)
+                rel_path = os.path.relpath(file_path_base, git_root)
             context['file_path'] = rel_path
             context['git_reference'] = markdown_config.get("git_reference") if markdown_config.get("git_reference") else get_git_reference(file_folder)
             context['git_repository'] = markdown_config.get("git_repository") if markdown_config.get("git_repository") else get_git_repo_url(file_folder)

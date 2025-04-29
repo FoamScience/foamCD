@@ -5,8 +5,9 @@ import sys
 import hashlib
 import argparse
 import platform
+import re
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Any
+from typing import Dict, List, Optional, Set, Any, Union
 
 try:
     from .tree_sitter_subparser import TreeSitterSubparser, is_tree_sitter_available
@@ -213,6 +214,11 @@ class ClangParser:
             except Exception as e:
                 raise ValueError(f"Error loading compilation database: {e}")
         
+        entities_to_skip = self.config.get("parser.entities_to_skip", [])
+        self.entity_skip_patterns = [re.compile(pattern) for pattern in entities_to_skip]
+        if self.entity_skip_patterns:
+            logger.info(f"Loaded {len(self.entity_skip_patterns)} entity skip patterns: {entities_to_skip}")
+
     def get_compile_commands(self, filepath: str) -> List[str]:
         """Get compilation arguments for a file from the compilation database
         
@@ -582,7 +588,7 @@ class ClangParser:
             entity.is_static = 'static' in token_spellings
             
         entity.is_defaulted = cursor.is_default_method()
-        entity.is_deleted = cursor.is_default_method()
+        entity.is_deleted = cursor.is_deleted_method()
         
     def _get_namespace_path(self, cursor: clang.cindex.Cursor) -> Optional[str]:
         """Extract namespace path from a cursor by traversing its semantic parents
@@ -698,7 +704,33 @@ class ClangParser:
         if entity.is_deprecated and not entity.parsed_doc.get('deprecated'):
             if not entity.parsed_doc:
                 entity.parsed_doc = {}
-            entity.parsed_doc['deprecated'] = f"This {entity.kind.name.lower().replace('_', ' ')} is deprecated"
+            entity_type = entity.kind.name.lower().replace('_', ' ')
+            entity.parsed_doc['deprecated'] = f"This {entity_type} is deprecated"
+    
+    def _should_skip_entity(self, entity: Union[Entity, Dict[str, Any]]) -> bool:
+        """Check if an entity should be skipped based on configured patterns
+        
+        Args:
+            entity: The entity to check (either Entity object or dictionary)
+            
+        Returns:
+            True if the entity should be skipped, False otherwise
+        """
+        if not self.entity_skip_patterns:
+            return False
+            
+        entity_name = entity.name if isinstance(entity, Entity) else entity.get("name", "")
+        if not entity_name:
+            return False
+            
+        for pattern in self.entity_skip_patterns:
+            # Use search() instead of match() to find the pattern anywhere in the string
+            # match() only checks at the beginning of the string
+            if pattern.match(entity_name):
+                logger.debug(f"Skipping entity '{entity_name}' as it matches skip pattern '{pattern.pattern}'")
+                return True
+                
+        return False
     
     def _process_class_features(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
         """Process class-specific features (inheritance, abstract classification)"""
@@ -784,8 +816,16 @@ class ClangParser:
                 
         return base_class_info
         
-    def parse_file(self, filepath: str) -> List[Entity]:
-        """Parse a C++ file and return its entities"""
+    def parse_file(self, filepath: str, force_tree_sitter: bool = False) -> List[Entity]:
+        """Parse a C++ file and return its entities
+        
+        Args:
+            filepath: Path to the file to parse
+            force_tree_sitter: If True, always use the Tree-sitter parser instead of Clang
+        
+        Returns:
+            List of entity objects extracted from the file
+        """
         compile_args = self.get_compile_commands(filepath)
         if self.db:
             file_stats = os.stat(filepath)
@@ -815,16 +855,17 @@ class ClangParser:
                 
         logger.info(f"Parsing {filepath} with args: {clean_args}")
         
-        use_fallback = False
+        use_fallback = force_tree_sitter
         libclang_error = None
-        try:
-            logger.debug(f"parsing translation unit {filepath} with index.parse")
-            translation_unit = self.index.parse(filepath, clean_args, options=self.tu_options)
-        except Exception as e:
-            import traceback
-            libclang_error = e
-            logger.error(f"Exception while parsing {filepath}: {e}\nTraceback: {traceback.format_exc()}")
-            use_fallback = True
+        if not force_tree_sitter:
+            try:
+                logger.debug(f"parsing translation unit {filepath} with index.parse")
+                translation_unit = self.index.parse(filepath, clean_args, options=self.tu_options)
+            except Exception as e:
+                import traceback
+                libclang_error = e
+                logger.error(f"Exception while parsing {filepath}: {e}\nTraceback: {traceback.format_exc()}")
+                use_fallback = True
             
         if use_fallback and self.use_tree_sitter_fallback and self.tree_sitter_subparser:
             logger.info(f"Heavy-duty macro code? But that is OK, trying a fail-tolerant alternative...")
@@ -837,7 +878,10 @@ class ClangParser:
                     self.entities[filepath] = file_entities
                     if self.db:
                         for entity in file_entities:
-                            self.db.store_entity(entity.to_dict())
+                            if not self._should_skip_entity(entity):
+                                self.db.store_entity(entity.to_dict())
+                            else:
+                                logger.debug(f"Skipped storing entity {entity.name} to database (matches skip pattern)")
                     return file_entities
                 else:
                     logger.warning(f"No entities extracted with Tree-sitter fallback")
@@ -891,7 +935,10 @@ class ClangParser:
             if self.db:
                 # First store all entities
                 for entity in file_entities:
-                    self.db.store_entity(entity.to_dict())
+                    if not self._should_skip_entity(entity):
+                        self.db.store_entity(entity.to_dict())
+                    else:
+                        logger.debug(f"Skipped storing entity {entity.name} to database (matches skip pattern)")
                 
                 # Then find and link declarations and definitions
                 self._find_and_link_declarations_definitions(cursor, filepath)
@@ -1091,6 +1138,10 @@ class ClangParser:
         if cursor.kind in interesting_kinds:
             entity = self._create_entity(cursor, parent)
             if entity:
+                should_skip = self._should_skip_entity(entity)
+                if should_skip:
+                    logger.debug(f"Skipping entity {entity.name} ({entity.kind}) during processing due to skip pattern")
+                    return
                 if parent:
                     parent.add_child(entity)
                 else:
@@ -1211,6 +1262,9 @@ class ClangParser:
                 test_entity.custom_fields["is_test_case"] = True
                 if "description" in test_case:
                     test_entity.custom_fields["test_description"] = test_case["description"]
+                if "tags" in test_case and test_case["tags"]:
+                    test_entity.custom_fields["tags"] = test_case["tags"]
+                    logger.debug(f"Added tags to test case: {test_case['tags']}")
                 if "references" in test_case and test_case["references"]:
                     test_entity.custom_fields["tree_sitter_references"] = ";".join(test_case["references"])
                     logger.debug(f"Added {len(test_case['references'])} type references to test case: {test_case['references']}")

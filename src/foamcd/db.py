@@ -1096,17 +1096,27 @@ class EntityDatabase:
                 SELECT * FROM method_classification
                 WHERE entity_uuid = ?
                 ''', (uuid,))
-                method_info = self.cursor.fetchone()
-                if method_info:
-                    entity["method_info"] = dict(method_info)
+                method_info_row = self.cursor.fetchone()
+                if method_info_row:
+                    columns = ["entity_uuid", "is_virtual", "is_pure_virtual", "is_override", "is_final", "is_static", "is_defaulted", "is_deleted", "return_type"]
+                    method_info = {}
+                    for i in range(1, min(len(columns), len(method_info_row))):
+                        method_info[columns[i]] = method_info_row[i]
+                    entity["method_info"] = method_info
+                    logger.debug(f"Loaded method classification for {uuid}: {method_info}")
             if "CLASS" in entity.get("kind", "") or "STRUCT" in entity.get("kind", ""):
                 self.cursor.execute('''
                 SELECT * FROM class_classification
                 WHERE entity_uuid = ?
                 ''', (uuid,))
-                class_info = self.cursor.fetchone()
-                if class_info:
-                    entity["class_info"] = dict(class_info)
+                class_info_row = self.cursor.fetchone()
+                if class_info_row:
+                    columns = ["entity_uuid", "is_abstract", "is_polymorphic", "is_final", "is_template", "is_literal_type", "is_pod", "is_trivial", "is_standard_layout"]
+                    class_info = {}
+                    for i in range(1, min(len(columns), len(class_info_row))):
+                        class_info[columns[i]] = class_info_row[i]
+                    entity["class_info"] = class_info
+                    logger.debug(f"Loaded class classification for {uuid}: {class_info}")
                 self.cursor.execute('''
                 SELECT * FROM inheritance
                 WHERE class_uuid = ?

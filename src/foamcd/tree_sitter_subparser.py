@@ -303,6 +303,7 @@ class TreeSitterSubparser:
         test_case = {
             "kind": None,
             "name": "",
+            "tags": "",
             "start_line": call_expr.start_point[0],
             "start_column": call_expr.start_point[1],
             "end_line": compound_stmt.end_point[0],
@@ -320,14 +321,39 @@ class TreeSitterSubparser:
                 break
                 
         if args_node:
+            description_parts = []
+            tag_parts = []
+            all_string_parts = []
             for child in args_node.children:
                 if child.type == "string_literal":
                     for content_node in child.children:
                         if content_node.type == "string_content":
-                            test_case["name"] = content_node.text.decode('utf8')
+                            all_string_parts.append(content_node.text.decode('utf8'))
                             break
-                    if test_case["name"]:
-                        break
+                elif child.type == "concatenated_string":
+                    concatenated_parts = []
+                    for string_node in child.children:
+                        if string_node.type == "string_literal":
+                            for content_node in string_node.children:
+                                if content_node.type == "string_content":
+                                    concatenated_parts.append(content_node.text.decode('utf8'))
+                    if concatenated_parts:
+                        all_string_parts.append(' '.join(concatenated_parts))
+            
+            if len(all_string_parts) >= 1:
+                description_parts.append(all_string_parts[0])
+                if len(all_string_parts) >= 2:
+                    last_part = all_string_parts[-1].strip()
+                    if last_part.startswith('['):
+                        if len(all_string_parts) > 2:
+                            description_parts.extend(all_string_parts[1:-1])
+                        tag_parts.append(last_part)
+                    else:
+                        description_parts.extend(all_string_parts[1:])
+            if description_parts:
+                test_case["name"] = ' '.join(part.strip() for part in description_parts).strip()
+            if tag_parts:
+                test_case["tags"] = ' '.join(part.strip() for part in tag_parts).strip()
         test_case["references"] = self._extract_type_references(compound_stmt)
         
         return test_case

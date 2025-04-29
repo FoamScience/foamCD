@@ -486,32 +486,38 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if method_entity.get("is_inline", False):
             qualifiers.append("inline")
             
-        signature_parts = []
-        if qualifiers:
-            signature_parts.append(' '.join(qualifiers))
-            
-        # Only include return type for non-constructor/destructor methods
-        if not (is_constructor or is_destructor) and result_type is not None:
-            signature_parts.append(result_type)
-        signature = ' '.join(signature_parts) + (' ' if signature_parts else '')
-        signature += name
-        
-        if parameters:
-            param_strings = [f"{p.get('type', '')} {p.get('name', '')}" for p in parameters]
-            signature += f"({', '.join(param_strings)})"
+        signature_contains_deleted = False
+        if "full_signature" in method_entity and method_entity["full_signature"]:
+            signature = method_entity["full_signature"]
+            if " = delete" in signature:
+                signature_contains_deleted = True
+            logger.debug(f"Using full signature for {name}: {signature}")
         else:
-            signature += "()"
+            signature_parts = []
+            if qualifiers:
+                signature_parts.append(' '.join(qualifiers))
+            if not (is_constructor or is_destructor) and result_type is not None:
+                signature_parts.append(result_type)
+            signature = ' '.join(signature_parts) + (' ' if signature_parts else '')
+            signature += name
+            if parameters:
+                param_strings = [f"{p.get('type', '')} {p.get('name', '')}" for p in parameters]
+                signature += f"({', '.join(param_strings)})"
+            else:
+                signature += "()"
+                
+            if method_info.get("is_const", False):
+                signature += " const"
+            if method_entity.get("is_noexcept", False):
+                signature += " noexcept"
+            if method_info.get("is_virtual", False) and method_info.get("is_pure_virtual", False):
+                signature += " = 0"
+            if method_info.get("is_defaulted", False):
+                signature += " = default"
+            elif method_info.get("is_deleted", False):
+                signature += " = delete"
             
-        if method_info.get("is_const", False):
-            signature += " const"
-        if method_entity.get("is_noexcept", False):
-            signature += " noexcept"
-        if method_info.get("is_virtual", False) and method_info.get("is_pure_virtual", False):
-            signature += " = 0"
-        if method_info.get("is_defaulted", False):
-            signature += " = default"
-        elif method_info.get("is_deleted", False):
-            signature += " = delete"
+            logger.debug(f"Constructed signature for {name}: {signature}")
             
         used_cpp_features = set()
         method_uuid = method_entity.get("uuid")
@@ -558,7 +564,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "is_final": method_info.get("is_final", False),
             "is_static": method_info.get("is_static", False),
             "is_defaulted": method_info.get("is_defaulted", False),
-            "is_deleted": method_info.get("is_deleted", False),
+            "is_deleted": method_info.get("is_deleted", False) or signature_contains_deleted,
             "is_const": method_info.get("is_const", False),
             "is_noexcept": method_entity.get("is_noexcept", False),
             "is_deprecated": method_entity.get("is_deprecated", False),
@@ -1357,6 +1363,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     db=unit_tests_db,
                     config=unit_tests_config
                 )
+                parser.use_tree_sitter_fallback = True
+                logger.info("Forcing Tree-sitter parser for unit tests")
                 try:
                     target_files = get_source_files_from_compilation_database(unit_tests_dir)
                     if not target_files:
@@ -1403,9 +1411,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                             except Exception as arg_e:
                                 logger.warning(f"Error filtering compilation arguments: {arg_e}")
                             try:
-                                entities = parser.parse_file(filepath)
+                                entities = parser.parse_file(filepath, force_tree_sitter=True)
                             except Exception as parse_error:
-                                logger.warning(f"Initial parse failed, trying fallback: {parse_error}")
+                                logger.warning(f"Unit test parsing failed with Tree-sitter: {parse_error}")
                                 raise
                             if entities:
                                 for entity in entities:
@@ -1488,18 +1496,24 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     for field_name, text_value in metadata_rows:
                         meta_dict[field_name] = text_value
                     description = ""
+                    tags = ""
                     references = []
                     test_kind = "TEST_CASE"  # Default kind
                     if 'test_description' in meta_dict:
                         description = meta_dict['test_description']
-                    elif "TEST_CASE" in test_name:
+                    if 'tags' in meta_dict:
+                        tags = meta_dict['tags']
+                    if not description and "TEST_CASE" in test_name:
                         desc_match = re.search(r'TEST_CASE\s*\(\s*"([^"]+)"', test_name)
                         if desc_match:
                             description = desc_match.group(1)
+                        if not tags:
+                            tags_match = re.search(r'TEST_CASE\s*\(\s*"[^"]+"\s*,\s*"([^"]+)"', test_name)
+                            if tags_match:
+                                tags = tags_match.group(1)
                     if 'tree_sitter_references' in meta_dict:
                         references = [r.strip() for r in meta_dict['tree_sitter_references'].split(';') if r.strip()]
                     base_file = test_file
-                    unit_test_pattern = self.config.get("markdown.frontmatter.entities.unit_test_linkage_pattern", None) if self.config else None
                     try:
                         git_root = None
                         if os.path.exists(base_file):
@@ -1510,16 +1524,22 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     except Exception as e:
                         logger.debug(f"Could not make file path relative to git repo: {e}")
                         
-                    file_with_lines = base_file
+                    file_with_lines = test_file
                     if test_line and test_end_line:
                         if '#' not in file_with_lines:
                             file_with_lines = f"{file_with_lines}#L{test_line}-L{test_end_line}"
-                    transformed_file, _ = self._transform_file_path(file_with_lines, test_name)
+                    transformed_file, _ = self._transform_file_path(
+                        file_with_lines,
+                        test_name,
+                        namespace="",
+                        template_pattern="unit_test_uri")
                     test_entry = {
                         "name": description if description else test_name,
                         "file": transformed_file,
                         "kind": test_kind
                     }
+                    if tags:
+                        test_entry["tags"] = tags
                     unit_tests.append(test_entry)
                     logger.debug(f"Added test case {test_name} for class {class_name}")
             
@@ -1913,7 +1933,7 @@ def main():
     version_args, _ = version_parser.parse_known_args()
     
     if version_args.version:
-        print(f"foamCD {get_version()}")
+        logger.info(f"foamCD {get_version()}")
         return 0
     
     # If not showing version, use the regular parser with required arguments
@@ -1927,7 +1947,7 @@ def main():
     
     # Version check is handled above, but keep this for completeness
     if args.version:
-        print(f"foamCD {get_version()}")
+        logger.info(f"foamCD {get_version()}")
         return 0
     
     try:
