@@ -221,7 +221,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         "public_methods": self._get_entity_public_methods(entity)
                     },
                     "openfoam_dsl": {
-                        "RTS": self._get_entity_rts_info(entity)
+                        "RTS": self._get_entity_rts_info(entity),
+                        "reflection": self._get_entity_reflection_info(entity)
                     },
                     "unit_tests": self._get_entity_unit_tests(entity),
                     "knowledge_requirements": self._get_entity_knowledge_requirements(entity),
@@ -1227,6 +1228,53 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 logger.error(f"Error retrieving base RTS classes: {e}")
                 
         return rts_info
+        
+    def _get_entity_reflection_info(self, entity: Dict[str, Any]) -> Dict[str, Any]:
+        """Get OpenFOAM reflection information for this entity
+
+        This method extracts reflection information from the entity custom fields.
+        It provides details about reflectable classes including:
+        - Whether the class supports reflection via the SchemaTable mechanism
+        - The standard configuration extracted from the reflection
+        - Detailed configuration information including types and defaults
+        
+        Args:
+            entity: Entity to process
+
+        Returns:
+            Dictionary with reflection information
+        """
+        reflection_info = {
+            "is_reflectable": False,
+            "reflection_type": "",
+            "standard_config": "",
+            "standard_config_details": "",
+            "reflection_error": ""
+        }
+
+        try:
+            # Check if this entity has reflection information in custom fields
+            if 'custom_fields' in entity and 'is_reflectable' in entity['custom_fields']:
+                reflection_info["is_reflectable"] = bool(entity['custom_fields'].get('is_reflectable'))
+                
+                if 'reflection_type' in entity['custom_fields']:
+                    reflection_info["reflection_type"] = entity['custom_fields'].get('reflection_type')
+                
+                if 'standard_config' in entity['custom_fields']:
+                    reflection_info["standard_config"] = entity['custom_fields'].get('standard_config')
+                
+                if 'standard_config_details' in entity['custom_fields']:
+                    reflection_info["standard_config_details"] = entity['custom_fields'].get('standard_config_details')
+                
+                if 'reflection_error' in entity['custom_fields']:
+                    reflection_info["reflection_error"] = entity['custom_fields'].get('reflection_error')
+
+                if reflection_info["is_reflectable"]:
+                    logger.info(f"Reflection information extracted for {entity.get('name', 'unknown entity')}")
+        except Exception as e:
+            logger.error(f"Error retrieving reflection information: {e}")
+
+        return reflection_info
         
     def _get_entity_unit_tests(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Get unit test information for an entity

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import os
+import sys
 import importlib.util
 import inspect
 from typing import Dict, List, Any, Type, Optional, Set
@@ -25,9 +26,18 @@ class PluginManager:
                    - only_plugins: Whitelist of plugins to enable (if empty, all non-disabled are enabled)
         """
         self.plugin_dirs = plugin_dirs or []
-        default_plugin_dir = os.path.join(os.path.dirname(__file__), "..", "plugins")
-        if os.path.exists(default_plugin_dir) and default_plugin_dir not in self.plugin_dirs:
-            self.plugin_dirs.append(default_plugin_dir)
+        
+        potential_plugin_dirs = [
+            os.path.realpath(os.path.join(os.path.dirname(os.path.dirname(__file__)), "plugins")),
+            os.path.realpath(os.path.join(os.path.dirname(__file__), "../plugins")),
+            os.path.realpath(os.path.join(os.path.dirname(__file__), "../../plugins")),
+            os.path.realpath(os.path.join(os.path.dirname(__file__), "plugins"))
+        ]
+        
+        for plugin_dir in potential_plugin_dirs:
+            if os.path.exists(plugin_dir) and os.path.isdir(plugin_dir) and plugin_dir not in self.plugin_dirs:
+                self.plugin_dirs.append(plugin_dir)
+                logger.debug(f"Found plugins directory: {plugin_dir}")
         self.detectors: Dict[str, FeatureDetector] = {}
         self.custom_entity_fields: Dict[str, Dict[str, Any]] = {}
         self.loaded_plugin_files: Set[str] = set()
@@ -36,7 +46,7 @@ class PluginManager:
         self.plugins_enabled = self.config.get("enabled", True)
         self.disabled_plugins = set(self.config.get("disabled_plugins", []))
         self.only_plugins = set(self.config.get("only_plugins", []))
-    
+        
     def discover_plugins(self):
         """Discover and load all plugins from the plugin directories"""
         for plugin_dir in self.plugin_dirs:
@@ -44,48 +54,53 @@ class PluginManager:
             if not plugin_path.exists():
                 logger.warning(f"Plugin directory does not exist: {plugin_dir}")
                 continue
-                
             logger.info(f"Searching for plugins in {plugin_dir}")
-            for plugin_file in plugin_path.glob("**/*.py"):
+            python_files = list(plugin_path.glob("**/*.py"))
+            for plugin_file in python_files:
                 if plugin_file.name.startswith("_"):
-                    continue  # Skip __init__.py and other special files
-                    
+                    continue
                 try:
                     self.load_plugin(str(plugin_file))
                 except Exception as e:
                     logger.error(f"Failed to load plugin {plugin_file}: {e}")
     
     def load_plugin(self, plugin_path: str) -> bool:
-        """Load a plugin from a Python file
+        """Load a plugin from the given path
         
         Args:
-            plugin_path: Path to the plugin Python file
+            plugin_path: Path to the plugin file
             
         Returns:
-            True if plugin was loaded successfully, False otherwise
+            True if plugin loaded successfully, False otherwise
         """
-        abs_plugin_path = os.path.abspath(plugin_path)
-        if abs_plugin_path in self.loaded_plugin_files:
-            logger.debug(f"Skipping already loaded plugin: {abs_plugin_path}")
+        if plugin_path in self.loaded_plugin_files:
             return True
+        
+        logger.debug(f"Attempting to load plugin: {plugin_path}")
             
         try:
-            module_name = os.path.basename(plugin_path).replace(".py", "")
-            logger.debug(f"Loading plugin: {module_name} from {abs_plugin_path}")
+            abs_plugin_path = os.path.abspath(plugin_path)
+            module_name = Path(abs_plugin_path).stem
             spec = importlib.util.spec_from_file_location(module_name, abs_plugin_path)
-            if not spec or not spec.loader:
-                logger.error(f"Could not load plugin spec: {abs_plugin_path}")
+            if spec is None:
+                logger.error(f"Failed to create spec for plugin: {abs_plugin_path}")
                 return False
-                
             module = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(module)
-            self.loaded_plugin_files.add(abs_plugin_path)
+            sys.modules[module_name] = module
+            
+            try:
+                spec.loader.exec_module(module)
+            except Exception as e:
+                return False
             detector_classes = []
-            for item_name, item in inspect.getmembers(module, inspect.isclass):
-                if (issubclass(item, FeatureDetector) and 
-                    item.__module__ == module.__name__ and 
-                    item != FeatureDetector):
-                    detector_classes.append(item)
+            for _, item in inspect.getmembers(module, inspect.isclass):
+                try:
+                    if (issubclass(item, FeatureDetector) and 
+                        item.__module__ == module.__name__ and
+                        item is not FeatureDetector):
+                        detector_classes.append(item)
+                except TypeError as e:
+                    pass
             
             if not detector_classes:
                 logger.warning(f"No detector classes found in plugin: {plugin_path}")
@@ -94,9 +109,10 @@ class PluginManager:
                 detector = detector_class()
                 self.register_detector(detector)
                 if hasattr(detector_class, "entity_fields") and isinstance(detector_class.entity_fields, dict):
+                    logger.debug(f"Found entity_fields in {detector.name}: {detector_class.entity_fields.keys()}")
                     self.register_custom_entity_fields(detector.name, detector_class.entity_fields)
-            
-            logger.info(f"Successfully loaded plugin: {module_name} with {len(detector_classes)} detectors")
+                else:
+                    logger.debug(f"No entity_fields found in {detector.name}")
             return True
             
         except Exception as e:
@@ -118,10 +134,9 @@ class PluginManager:
             logger.debug(f"Skipping plugin {detector.name} because plugins are disabled globally")
             return False
         if detector.name in self.disabled_plugins:
-            logger.info(f"Skipping disabled plugin: {detector.name}")
+            logger.debug(f"Skipping disabled plugin: {detector.name}")
             return False
         if self.only_plugins and detector.name not in self.only_plugins:
-            logger.info(f"Skipping plugin {detector.name} because it's not in the whitelist")
             return False
         if detector.name in self.detectors:
             logger.warning(f"Detector already registered with name: {detector.name}")
@@ -180,7 +195,10 @@ class PluginManager:
                               - description: Description of the field
         """
         if not field_definitions:
+            logger.debug(f"No field definitions provided by plugin {plugin_name}")
             return
+            
+        logger.debug(f"Registering {len(field_definitions)} custom fields from plugin {plugin_name}")
             
         for field_name, field_def in field_definitions.items():
             field_type = field_def.get('type', 'TEXT')
@@ -224,15 +242,21 @@ class PluginManager:
         for name, detector in self.detectors.items():
             try:
                 result = detector.detect(cursor, token_spellings, token_str, available_cursor_kinds)
+                logger.debug(f"Detector {name} returned result: {result}")
                 if isinstance(result, bool):
                     if result:
                         features.add(name)
+                        logger.debug(f"Added feature {name} from boolean result")
                 elif isinstance(result, dict):
                     if result.get('detected', False):
                         features.add(name)
+                        logger.debug(f"Added feature {name} from dict result with 'detected': {result.get('detected')}")
                     if 'fields' in result and isinstance(result['fields'], dict):
+                        logger.debug(f"Fields from {name}: {result['fields']}")
+                        logger.debug(f"Registered custom_entity_fields: {list(self.custom_entity_fields.keys())}")
                         for field_name, value in result['fields'].items():
                             if field_name in self.custom_entity_fields:
+                                logger.debug(f"Adding field {field_name}={value} to custom_fields")
                                 custom_fields[field_name] = value
                             else:
                                 logger.warning(f"Plugin {name} returned unregistered field: {field_name}")

@@ -203,7 +203,6 @@ class Config:
                             elif ',' in value and not (value.startswith('/') or value.startswith('./')):
                                 value = [item.strip() for item in value.split(',')]
                         OmegaConf.update(config, key, value)
-                        logger.info(f"Overriding {key} = {value}")
                     except Exception as e:
                         logger.warning(f"Failed to override {key} = {value}: {e}")
                         

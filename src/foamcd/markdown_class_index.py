@@ -142,9 +142,9 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
                     filtered_entity["definition_files"] = entity["definition_files"]
                 processed_entity = self._transform_nested_entity(filtered_entity)
                 if 'namespace' in processed_entity:
-                    processed_entity['uri'] = self._transform_file_path(declaration_file, namespace=filtered_entity["namespace"], template_pattern="doc_uri")
+                    processed_entity['uri'] = self._transform_file_path(declaration_file, filtered_entity["name"], namespace=filtered_entity["namespace"], template_pattern="doc_uri")
                 else:
-                    processed_entity['uri'] = self._transform_file_path(declaration_file, namespace="", template_pattern="doc_uri")
+                    processed_entity['uri'] = self._transform_file_path(declaration_file, filtered_entity["name"], namespace="", template_pattern="doc_uri")
                 processed_rts_classes.append(processed_entity)
         
         manual_entry_points = []

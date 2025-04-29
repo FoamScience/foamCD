@@ -20,10 +20,12 @@ from .config import Config
 from .version import get_version
 from .feature_detectors import FeatureDetectorRegistry, DeprecatedAttributeDetector
 from .plugin_system import PluginManager
+from clang.cindex import CursorKind
 
 logger = setup_logging()
 
 from .common import CPP_HEADER_EXTENSIONS, CPP_IMPLEM_EXTENSIONS, CPP_FILE_EXTENSIONS
+CURRENT_PARSER = None
 
 def configure_libclang(libclang_path: Optional[str] = None):
     """Configure libclang library path if necessary
@@ -286,6 +288,10 @@ class ClangParser:
                                     continue
                                     
                             filtered_args.append(arg)
+                        if filtered_args and filtered_args[-1] == "--":
+                            filtered_args = filtered_args[:-1]
+                            logger.debug("Removed trailing '--' from compilation arguments")
+                            
                         logger.debug(f"Using compilation arguments from database: {filtered_args[:5]}...")
                         return filtered_args
         except Exception as e:
@@ -415,6 +421,9 @@ class ClangParser:
         
         # Detect DSL features from plugins if enabled
         if not self.disable_plugins and hasattr(self, 'plugin_manager'):
+            global CURRENT_PARSER
+            CURRENT_PARSER = self
+            
             dsl_result = self.plugin_manager.detect_features(
                 cursor, all_token_spellings, all_token_text, available_cursor_kinds
             )
@@ -427,7 +436,6 @@ class ClangParser:
             # Add custom fields to the entity if provided
             if entity and dsl_result['custom_fields']:
                 entity.custom_fields.update(dsl_result['custom_fields'])
-                logger.debug(f"Added custom fields: {', '.join(dsl_result['custom_fields'].keys())}")
         
         return features
 

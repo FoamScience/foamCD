@@ -15,10 +15,9 @@ class FeatureDetector:
         self.cpp_version = cpp_version
         self.description = description
     
-    def detect(self, cursor, token_spellings: List[str], token_str: str, available_cursor_kinds: List[str]) -> bool:
-        """Return True if feature is detected, False otherwise"""
+    def detect(self, cursor, token_spellings: List[str], token_str: str, available_cursor_kinds: List[str]) -> bool | dict:
+        """Return True if feature is detected, False otherwise, optionally a dictionary for detected fields"""
         raise NotImplementedError("Subclasses must implement this method")
-
 
 class ClassesDetector(FeatureDetector):
     def __init__(self):
