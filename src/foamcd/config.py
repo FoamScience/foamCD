@@ -189,6 +189,14 @@ class Config:
         """
         try:
             config = OmegaConf.create(DEFAULT_CONFIG)
+            existing_config = None
+            if os.path.exists(path):
+                try:
+                    existing_config = OmegaConf.load(path)
+                    logger.info(f"Found existing configuration at {path}, merging with defaults")
+                    config = OmegaConf.merge(config, existing_config)
+                except Exception as e:
+                    logger.warning(f"Failed to load existing configuration at {path}: {e}. Using defaults.")
             if overrides:
                 for key, value in overrides.items():
                     try:
@@ -214,13 +222,18 @@ class Config:
                         OmegaConf.update(config, key, value)
                     except Exception as e:
                         logger.warning(f"Failed to override {key} = {value}: {e}")
-                        
             with open(path, 'w') as f:
                 yaml.dump(OmegaConf.to_container(config), f, default_flow_style=False)
+            
+            if existing_config and overrides:
+                logger.info(f"Updated configuration at {path} (merged with existing, applied {len(overrides)} overrides)")
+            elif existing_config:
+                logger.info(f"Updated configuration at {path} (merged with existing)")
+            elif overrides:
+                logger.info(f"Generated configuration at {path} with {len(overrides)} overrides")
+            else:
+                logger.info(f"Generated default configuration at {path}")
                 
-            logger.info(f"Generated configuration at {path}")
-            if overrides:
-                logger.info(f"Applied {len(overrides)} custom overrides")
             return True
         except Exception as e:
             import traceback
