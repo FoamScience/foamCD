@@ -1879,11 +1879,13 @@ class EntityDatabase:
             has_full_signature = 'full_signature' in columns
             
             # Query for functions and function templates
+            # only include those that are NOT member functions (parent_uuid IS NULL)
             if has_full_signature:
                 query = f"""
                 SELECT uuid, name, file, line, end_line, parent_uuid, kind, full_signature
                 FROM entities
                 WHERE kind IN ('FUNCTION_DECL', 'FUNCTION_TEMPLATE')
+                AND (parent_uuid IS NULL OR parent_uuid = '')
                 {file_filter}
                 """
             else:
@@ -1891,6 +1893,7 @@ class EntityDatabase:
                 SELECT uuid, name, file, line, end_line, parent_uuid, kind
                 FROM entities
                 WHERE kind IN ('FUNCTION_DECL', 'FUNCTION_TEMPLATE')
+                AND (parent_uuid IS NULL OR parent_uuid = '')
                 {file_filter}
                 """
             

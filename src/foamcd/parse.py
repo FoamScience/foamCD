@@ -540,6 +540,61 @@ class ClangParser:
         self._process_class_features(entity, cursor)
         self._detect_deprecation(entity, cursor)
         
+        # Handle scoped method definitions (e.g., Namespace::Class::method)
+        if cursor.kind in [
+            clang.cindex.CursorKind.FUNCTION_TEMPLATE,
+            clang.cindex.CursorKind.CXX_METHOD
+        ] and not parent:
+            try:
+                full_text = entity.full_signature if hasattr(entity, 'full_signature') and entity.full_signature else None
+                if not full_text and cursor.location.file:
+                    try:
+                        with open(cursor.location.file.name, 'r') as f:
+                            source = f.read()
+                            start_offset = cursor.extent.start.offset
+                            end_offset = cursor.extent.end.offset
+                            if start_offset < len(source) and end_offset <= len(source) and start_offset >= 0 and end_offset >= 0:
+                                text = source[start_offset:end_offset]
+                                body_start = text.find('{')
+                                if body_start > 0:
+                                    full_text = text[:body_start].strip()
+                                else:
+                                    full_text = text.rstrip(';').strip()
+                    except Exception as e:
+                        logger.debug(f"Error extracting full signature from source: {e}")
+                
+                if not full_text:
+                    try:
+                        tokens = list(cursor.get_tokens())
+                        full_text = ' '.join(t.spelling for t in tokens)
+                        body_start = full_text.find('{')
+                        if body_start > 0:
+                            full_text = full_text[:body_start].strip()
+                        full_text = full_text.rstrip(';').strip()
+                    except Exception as e:
+                        logger.debug(f"Error reconstructing signature from tokens: {e}")
+                
+                if full_text:
+                    # TODO: workaround, revisit for a real fix of scope resolution notation in method definitions
+                    import re
+                    scoped_method_pattern = r'(?:template\s*<[^>]*>\s*)?(?:[\w\d\s&*<>:,]+\s+)([\w\d_]+(?:::[\w\d_]+)+)::\s*([\w\d_]+)\s*\('
+                    scoped_match = re.search(scoped_method_pattern, full_text)
+                    
+                    if scoped_match:
+                        scope_path = scoped_match.group(1)
+                        method_name = scoped_match.group(2)
+                        if method_name == entity.name:
+                            scopes = scope_path.split('::')
+                            class_name = scopes[-1]
+                            namespace = '::'.join(scopes[:-1]) if len(scopes) > 1 else None
+                            entity.custom_fields = entity.custom_fields or {}
+                            entity.custom_fields['parent_class_name'] = class_name
+                            entity.custom_fields['parent_class_namespace'] = namespace
+                            if self.db:
+                                self._link_entity_to_parent_class(entity, class_name, namespace)
+            except Exception as e:
+                logger.debug(f"Error processing potential scoped method definition: {e}")
+        
         return entity
         
     def _process_method_classification(self, entity: Entity, cursor: clang.cindex.Cursor) -> None:
@@ -1152,6 +1207,98 @@ class ClangParser:
             for child in cursor.get_children():
                 self._process_cursor(child, entities, parent)
 
+    def resolve_scoped_template_functions(self) -> None:
+        """Resolve parent UUIDs for template functions defined with scope resolution notation
+        
+        This method should be called after all files have been parsed to ensure
+        all classes are available for resolving parent relationships.
+        """
+        if not self.db:
+            logger.warning("Cannot resolve template function parent relationships without a database")
+            return
+            
+        self.db.cursor.execute("""
+        SELECT uuid, name, file, line, full_signature, namespace 
+        FROM entities 
+        WHERE kind = 'FUNCTION_TEMPLATE' AND (parent_uuid IS NULL OR parent_uuid = '')
+        """)
+        template_functions = self.db.cursor.fetchall()
+        logger.info(f"Found {len(template_functions)} template functions without parent UUIDs")
+        
+        resolved_count = 0
+        for uuid, name, file_path, line, full_signature, namespace in template_functions:
+            try:
+                class_name = None
+                if full_signature and '::' in full_signature:
+                    import re
+                    scoped_pattern = r'([\w\d_]+)::([\w\d_]+)(?:\(|\s+\()'
+                    match = re.search(scoped_pattern, full_signature)
+                    if match:
+                        scope, method = match.groups()
+                        if method == name:
+                            class_name = scope
+                            logger.debug(f"Found class {class_name} for method {name} from signature")
+                    else:
+                        scoped_ns_pattern = r'([\w\d_]+)::([\w\d_]+)::([\w\d_]+)'
+                        matches = re.findall(scoped_ns_pattern, full_signature)
+                        for match in matches:
+                            if len(match) == 3 and match[2] == name:
+                                ns, class_name, method = match
+                                logger.debug(f"Found namespace {ns} and class {class_name} for method {name}")
+                                break
+                if not class_name and file_path:
+                    try:
+                        with open(file_path, 'r') as f:
+                            source_lines = f.readlines()
+                            if line <= len(source_lines):
+                                start_line = max(0, line - 5)  # Look at up to 5 lines before
+                                end_line = min(len(source_lines), line + 2)  # And a couple after
+                                source_snippet = ''.join(source_lines[start_line:end_line])
+                                scoped_method_pattern = r'([\w\d_]+)::([\w\d_]+)::([\w\d_]+)'
+                                matches = re.findall(scoped_method_pattern, source_snippet)
+                                for match in matches:
+                                    if len(match) == 3 and match[2] == name:
+                                        ns, class_name, method = match
+                                        logger.debug(f"Found namespace {ns} and class {class_name} for method {name} from source")
+                                        break
+                            
+                    except Exception as e:
+                        logger.debug(f"Error reading source file for {name}: {e}")
+                        
+                if class_name:
+                    if namespace:
+                        self.db.cursor.execute("""
+                        SELECT uuid FROM entities 
+                        WHERE name = ? AND namespace = ? AND kind IN 
+                        ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                        """, (class_name, namespace))
+                        result = self.db.cursor.fetchone()
+                        if result:
+                            parent_uuid = result[0]
+                            logger.info(f"Setting parent_uuid={parent_uuid} for template function {name}")
+                            self.db.cursor.execute("UPDATE entities SET parent_uuid = ? WHERE uuid = ?", 
+                                                 (parent_uuid, uuid))
+                            resolved_count += 1
+                            continue
+                    
+                    self.db.cursor.execute("""
+                    SELECT uuid FROM entities 
+                    WHERE name = ? AND kind IN 
+                    ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                    """, (class_name,))
+                    result = self.db.cursor.fetchone()
+                    if result:
+                        parent_uuid = result[0]
+                        logger.info(f"Setting parent_uuid={parent_uuid} for template function {name} (no namespace constraint)")
+                        self.db.cursor.execute("UPDATE entities SET parent_uuid = ? WHERE uuid = ?", 
+                                             (parent_uuid, uuid))
+                        resolved_count += 1
+            except Exception as e:
+                logger.error(f"Error resolving parent for template function {name}: {e}")
+                
+        logger.info(f"Resolved parent UUIDs for {resolved_count} out of {len(template_functions)} template functions")
+        self.db.commit()
+    
     def resolve_inheritance_relationships(self) -> None:
         """Resolve all inheritance relationships after all files have been parsed
         
@@ -1276,6 +1423,49 @@ class ClangParser:
         logger.info(f"Converted {len(entities)} entities from Tree-sitter result")
         return entities
     
+    def _link_entity_to_parent_class(self, entity, class_name, namespace=None):
+        """Link an entity to its parent class using database queries
+        
+        Args:
+            entity: The entity to link (e.g., a method)
+            class_name: Name of the parent class
+            namespace: Optional namespace of the parent class
+        """
+        if not self.db or not class_name:
+            return
+            
+        try:
+            if namespace:
+                self.db.cursor.execute("""
+                SELECT uuid FROM entities 
+                WHERE name = ? AND namespace = ? AND kind IN 
+                ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                """, (class_name, namespace))
+            else:
+                self.db.cursor.execute("""
+                SELECT uuid FROM entities 
+                WHERE name = ? AND kind IN 
+                ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                """, (class_name,))
+                
+            parent_result = self.db.cursor.fetchone()
+            
+            if parent_result:
+                parent_uuid = parent_result[0]
+                logger.debug(f"Found parent class {class_name} with UUID {parent_uuid} for {entity.name}")
+                entity.parent_uuid = parent_uuid
+                if hasattr(entity, 'uuid') and entity.uuid:
+                    self.db.cursor.execute("""
+                    UPDATE entities SET parent_uuid = ? WHERE uuid = ?
+                    """, (parent_uuid, entity.uuid))
+                    self.db.commit()
+                    logger.debug(f"Updated parent_uuid for {entity.name} in database")
+                
+            else:
+                logger.debug(f"Could not find parent class {class_name} for {entity.name} during linking")
+        except Exception as e:
+            logger.debug(f"Error linking entity to parent class: {e}")
+    
     def _export_entity(self, db, entity):
         """Helper method to recursively export an entity and its children to the database
         
@@ -1287,7 +1477,106 @@ class ClangParser:
         if hasattr(entity, 'custom_fields') and entity.custom_fields:
             entity_dict['custom_fields'] = entity.custom_fields
         children = entity_dict.pop('children', [])
+        parent_uuid = None
+        try:
+            if entity.kind in [CursorKind.FUNCTION_TEMPLATE, CursorKind.CXX_METHOD] and entity.file:
+                namespace = None
+                namespace_parts = None
+                class_name = None
+                method_name = entity.name
+                if '::' in entity.name:
+                    try:
+                        scoped_parts = entity.name.split('::')
+                        if len(scoped_parts) >= 3:  # At least Namespace::Class::method
+                            method_name = scoped_parts[-1]
+                            class_name = scoped_parts[-2]
+                            namespace_parts = scoped_parts[:-2]
+                            namespace = '::'.join(namespace_parts)
+                            logger.info(f"Extracted from entity name: {namespace}::{class_name}::{method_name}")
+                        elif len(scoped_parts) == 2:  # Just Class::method
+                            method_name = scoped_parts[-1]
+                            class_name = scoped_parts[-2]
+                            namespace = entity.namespace
+                            logger.info(f"Extracted from entity name with entity namespace: {namespace}::{class_name}::{method_name}")
+                    except Exception as e:
+                        logger.debug(f"Error extracting from scoped entity name: {e}")
+                if not class_name:
+                    try:
+                        with open(entity.file, 'r') as f:
+                            source_lines = f.readlines()
+                            if entity.line <= len(source_lines):
+                                line_content = source_lines[entity.line - 1]  # 1-indexed to 0-indexed
+                                import re
+                                scoped_pattern = r'(\w+)::(\w+)::(\w+)'
+                                matches = re.findall(scoped_pattern, line_content)
+                                if matches:
+                                    for match in matches:
+                                        namespace, class_name, method_name = match
+                                        if method_name == entity.name:
+                                            logger.info(f"Found scoped method definition in source: {namespace}::{class_name}::{method_name}")
+                                            break
+                                if not class_name:
+                                    template_pattern = r'\w+\s+(\w+)::(\w+)::(\w+)\s*<'
+                                    match = re.search(template_pattern, line_content)
+                                    if match:
+                                        namespace, class_name, method_name = match.groups()
+                                        if method_name == entity.name:
+                                            logger.info(f"Found templated method definition: {namespace}::{class_name}::{method_name}")
+                    except Exception as e:
+                        logger.warning(f"Error analyzing source for scoped method: {e}")
+                
+                if class_name and method_name == entity.name:
+                    try:
+                        if namespace:
+                            db.cursor.execute("""
+                            SELECT uuid FROM entities 
+                            WHERE name = ? AND namespace = ? AND kind IN 
+                            ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                            """, (class_name, namespace))
+                        else:
+                            db.cursor.execute("""
+                            SELECT uuid FROM entities 
+                            WHERE name = ? AND kind IN 
+                            ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                            """, (class_name,))
+                        
+                        parent_result = db.cursor.fetchone()
+                        
+                        if parent_result:
+                            parent_uuid = parent_result[0]
+                            logger.info(f"Setting parent_uuid={parent_uuid} for {entity.name}")
+                            entity_dict['parent_uuid'] = parent_uuid
+                        else:
+                            logger.warning(f"Could not find parent class {class_name} in namespace {namespace} for {entity.name}")
+                            
+                            db.cursor.execute("""
+                            SELECT uuid FROM entities 
+                            WHERE name = ? AND kind IN 
+                            ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+                            """, (class_name,))
+                            parent_result = db.cursor.fetchone()
+                            
+                            if parent_result:
+                                parent_uuid = parent_result[0]
+                                logger.info(f"Found parent class without namespace constraint: {class_name} with UUID {parent_uuid}")
+                                entity_dict['parent_uuid'] = parent_uuid
+                    except Exception as e:
+                        logger.error(f"Error setting parent UUID: {e}")
+        except Exception as e:
+            logger.error(f"Error in direct method/template fix: {e}")
+        
         db.store_entity(entity_dict)
+        if hasattr(entity, 'custom_fields') and entity.custom_fields and \
+           'parent_class_name' in entity.custom_fields and not parent_uuid:
+            class_name = entity.custom_fields['parent_class_name']
+            namespace = entity.custom_fields.get('parent_class_namespace')
+            self.db.cursor.execute("SELECT uuid FROM entities WHERE name = ? AND file = ? AND line = ?", 
+                                 (entity.name, entity.file, entity.line))
+            result = self.db.cursor.fetchone()
+            if result:
+                entity.uuid = result[0]
+                self._link_entity_to_parent_class(entity, class_name, namespace)
+        
         for child in entity.children:
             self._export_entity(db, child)
 
@@ -1620,8 +1909,9 @@ def main():
             logger.info(f"Processing complete: {parsed_count} parsed, {unchanged_count} unchanged, {error_count} errors (from {len(target_files)} total files)")
         
         logger.info("Resolving inheritance relationships between entities...")
+        parser.resolve_scoped_template_functions()
         parser.resolve_inheritance_relationships()
-        logger.debug("Inheritance relationships resolved and base_child_links populated")
+        logger.info(f"Parsed {len(parser.entities)} files with {sum(len(entities) for entities in parser.entities.values())} top-level entities")
         
         logger.info("Parsing complete")
         return 0
