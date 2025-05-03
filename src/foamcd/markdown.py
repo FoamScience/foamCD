@@ -58,7 +58,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             name = entity_copy.get("name", "")
             try:
                 file_path = entity_copy["file"]
-                transformed_path, _ = self._transform_file_path(file_path, name)
+                transformed_path, _ = self._transform_file_path(file_path=file_path,
+                                                                name=name,
+                                                                template_pattern="filename_uri",
+                                                                entity=entity_copy)
                 entity_copy["file"] = transformed_path
             except Exception as e:
                 logger.warning(f"Error transforming file path: {e}")
@@ -72,7 +75,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     if line and end_line:
                         decl_file = f"{decl_file}#L{line}-L{end_line}"
                         logger.debug(f"Added line numbers to declaration file: {decl_file}")
-                transformed_path, _ = self._transform_file_path(decl_file, name)
+                transformed_path, _ = self._transform_file_path(file_path=decl_file,
+                                                                name=name,
+                                                                template_pattern="filename_uri",
+                                                                entity=entity_copy)
                 entity_copy['declaration_file'] = transformed_path
             except Exception as e:
                 logger.warning(f"Error transforming declaration file path: {e}")
@@ -82,7 +88,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             try:
                 transformed_defs = []
                 for def_file in entity_copy['definition_files']:
-                    transformed_def, _ = self._transform_file_path(def_file, name, template_pattern="filename_uri", entity=entity_copy)
+                    transformed_def, _ = self._transform_file_path(file_path=def_file,
+                                                                   name=name,
+                                                                   template_pattern="filename_uri",
+                                                                   entity=entity_copy)
                     transformed_defs.append(transformed_def)
                 entity_copy['definition_files'] = transformed_defs
             except Exception as e:
@@ -245,7 +254,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         "static_methods": self._get_entity_static_methods(entity),
                         "abstract_methods": self._get_entity_abstract_methods(entity),
                         "abstract_in_base_methods": self._get_entity_abstract_in_base_methods(entity),
-                        "public_methods": self._get_entity_public_methods(entity)
+                        "public_methods": self._get_entity_public_methods(entity),
+                        "public_fields": self._get_entity_public_fields(entity)
                     },
                     "openfoam_dsl": {
                         "RTS": self._get_entity_rts_info(entity),
@@ -255,8 +265,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     "knowledge_requirements": self._get_entity_knowledge_requirements(entity),
                     "protected_bases": self._get_entity_protected_bases(entity),
                     "protected_methods": self._get_entity_protected_methods(entity),
+                    "protected_fields": self._get_entity_protected_fields(entity),
                     "private_bases": self._get_entity_private_bases(entity),
                     "private_methods": self._get_entity_private_methods(entity),
+                    "private_fields": self._get_entity_private_fields(entity),
                     "enclosed_entities": self._get_entity_enclosed_entities(entity),
                     "mpi_comms": self._get_entity_mpi_comms(entity)
                 }
@@ -396,7 +408,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             if start_line and end_line:
                 file_path = f"{file_path}#L{start_line}-L{end_line}"
                 logger.debug(f"Added line numbers to file path: {file_path}")
-            transformed_path, _ = self._transform_file_path(file_path, name)
+            transformed_path, _ = self._transform_file_path(file_path=file_path,
+                                                            name=name,
+                                                            template_pattern="filename_uri",
+                                                            entity=entity)
             return transformed_path
             
         return "unknown.H"  # Placeholder
@@ -467,7 +482,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         if entity.get("kind") not in ['CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE']:
             return None
         pattern = self.config.get('markdown.doc_uri')
-        _, context = self._transform_file_path(entity['file'], entity['name'], entity['namespace'])
+        _, context = self._transform_file_path(file_path=entity['file'],
+                                               name=entity['name'],
+                                               template_pattern="doc_uri",
+                                               entity=entity)
         try:
             template = Template(pattern)
             return template.render(**context)
@@ -638,9 +656,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             end_line = method_entity.get("end_line") or method_entity.get("line")
             if line and end_line:
                 file_path = f"{file_path}#L{line}-L{end_line}"
-            namespace = method_entity.get("namespace")
-            transformed_path, _ = self._transform_file_path(file_path, name,
-                                                            namespace,
+            transformed_path, _ = self._transform_file_path(file_path=file_path,
+                                                            name=name,
                                                             template_pattern="method_doc_uri",
                                                             entity=method_entity)
             formatted_info["definition_file"] = transformed_path
@@ -1022,8 +1039,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                             processed_methods.add(method_name)
                             impl_info = self._format_method_info(impl)
                             base_file = base_entity.get("file", "")
-                            transformed_file, _ = self._transform_file_path(base_file, base_name,
-                                                                            base_entity.get("namespace", ""),
+                            transformed_file, _ = self._transform_file_path(file_path=base_file,
+                                                                            name=base_name,
                                                                             template_pattern="method_doc_uri",
                                                                             entity=base_entity)
                             
@@ -1556,11 +1573,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     if test_line and test_end_line:
                         if '#' not in file_with_lines:
                             file_with_lines = f"{file_with_lines}#L{test_line}-L{test_end_line}"
-                    transformed_file, _ = self._transform_file_path(
-                        file_with_lines,
-                        test_name,
-                        namespace="",
-                        template_pattern="unit_test_uri")
+                    transformed_file, _ = self._transform_file_path(file_path=file_with_lines,
+                                                                    name=test_name,
+                                                                    template_pattern="unit_test_uri")
                     test_entry = {
                         "name": description if description else test_name,
                         "file": transformed_file,
@@ -1859,34 +1874,127 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         
         if "children" not in entity:
             return private_methods
-        excluded_methods = set()
+        excludes = set()
+        for abstract in self._get_entity_abstract_methods(entity):
+            excludes.add(abstract.get("name", ""))
+                
         for child in entity.get("children", []):
             if not child.get("kind", "") in ["CXX_METHOD", "FUNCTION_TEMPLATE"]:
                 continue
             if child.get("access_specifier", "public").lower() != "private":
                 continue
-            method_name = child.get("name", "")
-            if method_name in excluded_methods:
+            if child.get("name", "") in excludes:
                 continue
-            class_name = entity.get("name", "")
-            if method_name == class_name or method_name == f"~{class_name}":
-                continue
-            private_info = self._format_method_info(child)
+            method_info = self._format_method_info(child)
             method_entry = None
             for entry in private_methods:
-                if entry.get("name") == method_name:
+                if entry.get("name") == child.get("name", ""):
                     method_entry = entry
                     break
-            
             if method_entry:
                 if "overloads" not in method_entry:
                     method_entry["overloads"] = []
-                method_entry["overloads"].append(private_info)
+                method_entry["overloads"].append(method_info)
             else:
-                new_entry = {"name": method_name, "overloads": [private_info]}
+                new_entry = {"name": child.get("name", ""), "overloads": [method_info]}
                 private_methods.append(new_entry)
                 
         return private_methods
+        
+    def _format_field_info(self, field: Dict[str, Any]) -> Dict[str, Any]:
+        """Format field information for display
+        
+        Args:
+            field: Field entity dictionary
+            
+        Returns:
+            Formatted field information dictionary
+        """
+        field_info = {
+            "name": field.get("name", ""),
+            "type": field.get("result_type", "") or field.get("type", ""),
+            "file": field.get("file", ""),
+            "line": field.get("line", 0),
+            "end_line": field.get("end_line", 0),
+            "is_static": field.get("field_info", {}).get("is_static", False),
+            "is_const": field.get("field_info", {}).get("is_const", False),
+            "is_mutable": field.get("field_info", {}).get("is_mutable", False),
+            "access": field.get("access_specifier", "public").lower(),
+            "default_value": field.get("field_info", {}).get("default_value", ""),
+            "doc_comment": field.get("doc_comment", "")
+        }
+        field_info["file"] = self._transform_file_path(file_path=field.get("file", ""),
+                                              name=field.get("name", ""),
+                                              template_pattern="filename_uri",
+                                              entity=field_info)
+        if field.get("parsed_doc"):
+            field_info["documentation"] = field.get("parsed_doc", {})
+            
+        return field_info
+    
+    def _get_entity_public_fields(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get public field information for an entity
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            List of public field dictionaries with standardized format
+        """
+        public_fields = []
+        if "children" not in entity:
+            return public_fields
+        for child in entity.get("children", []):
+            if child.get("kind", "") != "FIELD_DECL":
+                continue
+            if child.get("access_specifier", "public").lower() != "public":
+                continue
+            field_info = self._format_field_info(child)
+            public_fields.append(field_info)
+        return public_fields
+        
+    def _get_entity_protected_fields(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get protected field information for an entity
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            List of protected field dictionaries with standardized format
+        """
+        protected_fields = []
+        if "children" not in entity:
+            return protected_fields
+        for child in entity.get("children", []):
+            if child.get("kind", "") != "FIELD_DECL":
+                continue
+            if child.get("access_specifier", "public").lower() != "protected":
+                continue
+            field_info = self._format_field_info(child)
+            protected_fields.append(field_info)
+                
+        return protected_fields
+        
+    def _get_entity_private_fields(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get private field information for an entity
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            List of private field dictionaries with standardized format
+        """
+        private_fields = []
+        if "children" not in entity:
+            return private_fields
+        for child in entity.get("children", []):
+            if child.get("kind", "") != "FIELD_DECL":
+                continue
+            if child.get("access_specifier", "public").lower() != "private":
+                continue
+            field_info = self._format_field_info(child)
+            private_fields.append(field_info)
+        return private_fields
         
     def _get_entity_enclosed_entities(self, entity):
         """Get entities enclosed by this entity (nested classes, enums, etc.)
@@ -1969,6 +2077,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         transformed['private_methods'] = self._get_entity_private_methods(complete_entity)
                         transformed['static_methods'] = self._get_entity_static_methods(complete_entity)
                         transformed['abstract_methods'] = self._get_entity_abstract_methods(complete_entity)
+                        transformed['public_fields'] = self._get_entity_public_fields(complete_entity)
+                        transformed['protected_fields'] = self._get_entity_protected_fields(complete_entity)
+                        transformed['private_fields'] = self._get_entity_private_fields(complete_entity)
                         transformed['documentation'] = self._format_entity_documentation(complete_entity)
                     elif transformed.get('kind') == 'ENUM_DECL':
                         try:

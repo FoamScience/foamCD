@@ -81,7 +81,6 @@ class MarkdownGeneratorBase:
     def _transform_file_path(self,
             file_path: str,
             name: str = None,
-            namespace: str = None,
             template_pattern: str="doc_uri",
             entity: Dict[str, Any]={}
         ) -> str:
@@ -112,6 +111,7 @@ class MarkdownGeneratorBase:
             return file_path, None
         untemplated_name = name.split('<')[0]
 
+        effective_namespace = entity.get('namespace') if entity else None
         context = {
             'start_line': 1,
             'end_line': 1,
@@ -121,7 +121,7 @@ class MarkdownGeneratorBase:
             'git_reference': '',
             'git_repository': '',
             'name': untemplated_name,
-            'namespace': namespace.replace('::', '_') if namespace else None,
+            'namespace': effective_namespace.replace('::', '_') if effective_namespace else None,
             'project_name': None, 
             'project_dir': None,
             'parent_name': None,
@@ -264,13 +264,22 @@ class MarkdownGeneratorBase:
         name = result.get('name', '')
         namespace = result.get('namespace', '')
         if 'file' in result:
-            result['file'], _ = self._transform_file_path(result['file'], name, namespace)
+            result['file'], _ = self._transform_file_path(file_path=result['file'],
+                                                          name=name,
+                                                          template_pattern="doc_uri",
+                                                          entity=entity)
         if 'declaration_file' in result:
-            result['declaration_file'], _ = self._transform_file_path(result['declaration_file'], name, namespace, template_pattern="filename_uri")
+            result['declaration_file'], _ = self._transform_file_path(file_path=result['declaration_file'],
+                                                                      name=name,
+                                                                      template_pattern="filename_uri",
+                                                                      entity=entity)
         if 'definition_files' in result:
             transformed_def_files = []
             for def_file in result['definition_files']:
-                tmp_file, _ = self._transform_file_path(def_file, name, namespace, template_pattern="filename_uri")
+                tmp_file, _ = self._transform_file_path(file_path=def_file,
+                                                        name=name,
+                                                        template_pattern="filename_uri",
+                                                        entity=entity)
                 transformed_def_files.append(tmp_file)
             result['definition_files'] = transformed_def_files
         if 'children' in result and isinstance(result['children'], list):
@@ -299,15 +308,24 @@ class MarkdownGeneratorBase:
         entity_copy = entity.copy()
         name = entity_copy.get('name', '')
         if 'declaration_file' in entity_copy:
-            entity_copy['declaration_file'], _ = self._transform_file_path(entity_copy['declaration_file'], name)
+            entity_copy['declaration_file'], _ = self._transform_file_path(file_path=entity_copy['declaration_file'],
+                                                                           name=name,
+                                                                           template_pattern="filename_uri",
+                                                                           entity=entity_copy)
         if 'definition_files' in entity_copy:
             transformed_def_files = []
             for def_file in entity_copy['definition_files']:
-                tmp_file, _ = self._transform_file_path(def_file, name)
+                tmp_file, _ = self._transform_file_path(file_path=def_file,
+                                                        name=name,
+                                                        template_pattern="filename_uri",
+                                                        entity=entity_copy)
                 transformed_def_files.append(tmp_file)
             entity_copy['definition_files'] = transformed_def_files
         if 'file' in entity_copy:
-            entity_copy['file'], _ = self._transform_file_path(entity_copy['file'], name)
+            entity_copy['file'], _ = self._transform_file_path(file_path=entity_copy['file'],
+                                                               name=name,
+                                                               template_pattern="doc_uri",
+                                                               entity=entity_copy)
         return entity_copy
     
     def _flatten_class_stats(self, class_stats: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
