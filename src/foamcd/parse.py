@@ -445,6 +445,110 @@ class ClangParser:
         
         return features
 
+    def _get_access_specifier(self, cursor):
+        """Get the access specifier (public, protected, private) of a cursor within a class
+        
+        Args:
+            cursor: The cursor to check
+            
+        Returns:
+            String representing the access level: 'public', 'protected', or 'private'
+        """
+        try:
+            default_access = 'private'  # Default for classes
+            parent = cursor.semantic_parent
+            if parent and parent.kind == CursorKind.STRUCT_DECL:
+                default_access = 'public'  # Default for structs
+            if cursor.access_specifier == clang.cindex.AccessSpecifier.PUBLIC:
+                return 'public'
+            elif cursor.access_specifier == clang.cindex.AccessSpecifier.PROTECTED:
+                return 'protected'
+            elif cursor.access_specifier == clang.cindex.AccessSpecifier.PRIVATE:
+                return 'private'
+            else:
+                return default_access
+        except Exception as e:
+            logger.debug(f"Error determining access specifier: {e}")
+            return 'public'  # Default to public if there's an error
+    
+    def _process_type_alias(self, cursor, parent_entity=None):
+        """Process a type alias declaration (typedef or using)
+        
+        Args:
+            cursor: Type alias cursor (TYPEDEF_DECL or TYPE_ALIAS_DECL)
+            parent_entity: Parent entity (if inside a class/struct)
+            
+        Returns:
+            Processed type alias information or None if it couldn't be processed
+        """
+        if not cursor or not cursor.spelling:
+            return None
+            
+        try:
+            name = cursor.spelling
+            underlying_type = ""
+            
+            # Get the underlying type from the cursor
+            if cursor.kind == CursorKind.TYPEDEF_DECL:
+                # For typedefs, use the underlying type directly
+                underlying_type = cursor.underlying_typedef_type.spelling
+            elif cursor.kind == CursorKind.TYPE_ALIAS_DECL:
+                # For 'using' declarations, find the underlying type from children
+                for child in cursor.get_children():
+                    if child.kind == CursorKind.TYPE_REF:
+                        underlying_type = child.spelling
+                        break
+                    
+            if not underlying_type:
+                # Fall back to extract from the code if type reference not found
+                location = cursor.extent
+                source_code = None
+                try:
+                    source_file = str(cursor.location.file.name)
+                    with open(source_file, 'r') as f:
+                        source_lines = f.readlines()
+                    # Extract the lines from the source code
+                    if location.start.line > 0 and location.start.line <= len(source_lines):
+                        if cursor.kind == CursorKind.TYPEDEF_DECL:
+                            # For typedefs, extract from 'typedef X Y' -> get X
+                            line = source_lines[location.start.line - 1]
+                            parts = line.strip().split()
+                            if len(parts) > 2 and parts[0] == 'typedef':
+                                underlying_type = ' '.join(parts[1:-1])
+                        elif cursor.kind == CursorKind.TYPE_ALIAS_DECL:
+                            # For using, extract from 'using X = Y' -> get Y
+                            line = source_lines[location.start.line - 1]
+                            if '=' in line:
+                                underlying_type = line.split('=', 1)[1].strip().rstrip(';')
+                except Exception as e:
+                    logger.debug(f"Error extracting type from source: {e}")
+                    
+            if not underlying_type:
+                underlying_type = "unknown"
+                
+            # Get access specifier if inside a class/struct
+            access_specifier = "public"
+            if parent_entity and parent_entity.kind in [
+                CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, CursorKind.CLASS_TEMPLATE
+            ]:
+                access_specifier = self._get_access_specifier(cursor)
+                
+            # Get documentation comment
+            doc_comment = cursor.brief_comment or ""
+                
+            return {
+                "name": name,
+                "underlying_type": underlying_type,
+                "access_specifier": access_specifier,
+                "file": str(cursor.location.file.name) if cursor.location.file else "",
+                "line": cursor.extent.start.line,
+                "end_line": cursor.extent.end.line,
+                "doc_comment": doc_comment
+            }
+        except Exception as e:
+            logger.error(f"Error processing type alias {cursor.spelling}: {e}")
+            return None
+            
     def _create_placeholder_entity(self, cursor: clang.cindex.Cursor, parent: Optional[Entity] = None) -> Optional[Entity]:
         """Create a placeholder entity for external references (e.g., standard library)
         
@@ -994,9 +1098,8 @@ class ClangParser:
                         self.db.store_entity(entity.to_dict())
                     else:
                         logger.debug(f"Skipped storing entity {entity.name} to database (matches skip pattern)")
-                
-                # Then find and link declarations and definitions
                 self._find_and_link_declarations_definitions(cursor, filepath)
+                self._store_member_type_aliases(file_entities)
         except Exception as e:
             import traceback
             logger.error(f"Error processing file {filepath}: {e}\nTraceback: {traceback.format_exc()}")
@@ -1005,6 +1108,38 @@ class ClangParser:
         logger.info(f"Successfully parsed {len(file_entities)} top-level entities")
         return file_entities
         
+    def _store_member_type_aliases(self, entities):
+        """Process and store member type aliases for all entities recursively
+        
+        This is called after all entities have been stored in the database, which
+        ensures that the class UUID foreign key constraint will be satisfied.
+        
+        Args:
+            entities: List of entities to process
+        """
+        if not self.db:
+            return
+            
+        for entity in entities:
+            if hasattr(entity, 'member_type_aliases') and entity.member_type_aliases:
+                for type_alias in entity.member_type_aliases:
+                    try:
+                        self.db.store_class_member_type(
+                            class_uuid=type_alias['parent_uuid'],
+                            name=type_alias['name'],
+                            underlying_type=type_alias['underlying_type'],
+                            access_specifier=type_alias['access_specifier'],
+                            file=type_alias['file'],
+                            line=type_alias['line'],
+                            end_line=type_alias['end_line'],
+                            doc_comment=type_alias['doc_comment']
+                        )
+                        logger.debug(f"Stored class member type alias: {type_alias['name']} for class {entity.name}")
+                    except Exception as e:
+                        logger.error(f"Error storing class member type alias: {e}")
+            if hasattr(entity, 'children') and entity.children:
+                self._store_member_type_aliases(entity.children)
+    
     def _find_and_link_declarations_definitions(self, cursor: clang.cindex.Cursor, filepath: str):
         """Find declarations and their matching definitions and link them in the database
         
@@ -1137,6 +1272,7 @@ class ClangParser:
             CursorKind.ENUM_CONSTANT_DECL,
             CursorKind.VAR_DECL,
             CursorKind.TYPEDEF_DECL,
+            CursorKind.TYPE_ALIAS_DECL,  # C++11 'using' type alias declarations
             CursorKind.TEMPLATE_TYPE_PARAMETER,
             CursorKind.TEMPLATE_NON_TYPE_PARAMETER,
             CursorKind.FUNCTION_TEMPLATE,
@@ -1189,6 +1325,18 @@ class ClangParser:
             
         if detected_features and parent and hasattr(parent, 'cpp_features'):
             parent.cpp_features.update(detected_features)
+        
+        # Collect member types for later
+        if cursor.kind in [CursorKind.TYPEDEF_DECL, CursorKind.TYPE_ALIAS_DECL] and parent and parent.kind in [
+            CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, CursorKind.CLASS_TEMPLATE
+        ]:
+            type_alias_info = self._process_type_alias(cursor, parent)
+            if type_alias_info:
+                if not hasattr(parent, 'member_type_aliases'):
+                    parent.member_type_aliases = []
+                type_alias_info['parent_uuid'] = parent.uuid
+                parent.member_type_aliases.append(type_alias_info)
+                logger.debug(f"Added type alias {type_alias_info['name']} to be stored for class {parent.name}")
         
         if cursor.kind in interesting_kinds:
             entity = self._create_entity(cursor, parent)

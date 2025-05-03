@@ -257,6 +257,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         "public_methods": self._get_entity_public_methods(entity),
                         "public_fields": self._get_entity_public_fields(entity)
                     },
+                    "member_type_aliases": self._get_entity_member_type_aliases(entity),
                     "openfoam_dsl": {
                         "RTS": self._get_entity_rts_info(entity),
                         "reflection": self._get_entity_reflection_info(entity)
@@ -1996,6 +1997,54 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             private_fields.append(field_info)
         return private_fields
         
+    def _get_entity_member_type_aliases(self, entity: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
+        """Get all member type aliases (typedefs or using declarations) for a class,
+        categorized by access level
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            Dictionary containing public, protected, and private type aliases
+        """
+        result = {
+            "public": [],
+            "protected": [],
+            "private": []
+        }
+        
+        uuid = entity.get("uuid")
+        if not uuid:
+            return result
+            
+        try:
+            db = EntityDatabase(self.db_path)
+            member_types = db.get_class_member_types(uuid)
+            for type_alias in member_types:
+                access = type_alias.get("access_specifier", "public").lower()
+                if type_alias.get("file"):
+                    file_path = type_alias["file"]
+                    line = type_alias.get("line")
+                    end_line = type_alias.get("end_line")
+                    if line and end_line:
+                        file_path = f"{file_path}#L{line}-L{end_line}"
+                    transformed_url, _ = self._transform_file_path(
+                        file_path=file_path,
+                        name=type_alias.get("name", ""),
+                        template_pattern="filename_uri",
+                        entity=entity
+                    )
+                    type_alias["file"] = transformed_url
+                if access == "public":
+                    result["public"].append(type_alias)
+                elif access == "protected":
+                    result["protected"].append(type_alias)
+                elif access == "private":
+                    result["private"].append(type_alias)
+        except Exception as e:
+            logger.error(f"Error retrieving member type aliases: {e}")
+        return result
+        
     def _get_entity_enclosed_entities(self, entity):
         """Get entities enclosed by this entity (nested classes, enums, etc.)
         
@@ -2080,6 +2129,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         transformed['public_fields'] = self._get_entity_public_fields(complete_entity)
                         transformed['protected_fields'] = self._get_entity_protected_fields(complete_entity)
                         transformed['private_fields'] = self._get_entity_private_fields(complete_entity)
+                        transformed['member_type_aliases'] = self._get_entity_member_type_aliases(complete_entity)
                         transformed['documentation'] = self._format_entity_documentation(complete_entity)
                     elif transformed.get('kind') == 'ENUM_DECL':
                         try:

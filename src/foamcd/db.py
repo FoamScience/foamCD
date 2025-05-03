@@ -197,6 +197,28 @@ class EntityDatabase:
             ON entity_enclosing_links (enclosing_uuid)
             ''')
             
+            # Class member type aliases table
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS class_member_types (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                class_uuid TEXT NOT NULL,
+                name TEXT NOT NULL,
+                underlying_type TEXT NOT NULL,
+                access_specifier TEXT DEFAULT 'public',
+                file TEXT,
+                line INTEGER,
+                end_line INTEGER,
+                doc_comment TEXT,
+                FOREIGN KEY (class_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
+            )
+            ''')
+            
+            # Create index for faster lookup of class member types
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_class_member_types_class_uuid 
+            ON class_member_types (class_uuid)
+            ''')
+            
             # Method classification table
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS method_classification (
@@ -2328,15 +2350,66 @@ class EntityDatabase:
             True if the entity is enclosed, False otherwise
         """
         try:
-            self.cursor.execute('''
-            SELECT COUNT(*) FROM entity_enclosing_links
-            WHERE enclosed_uuid = ?
-            ''', (entity_uuid,))
+            self.cursor.execute(
+                "SELECT COUNT(*) FROM entity_enclosing_links WHERE enclosed_uuid = ?", (entity_uuid,)
+            )
             count = self.cursor.fetchone()[0]
             return count > 0
         except sqlite3.Error as e:
             logger.error(f"Error checking if entity is enclosed: {e}")
             return False
+            
+    def store_class_member_type(self, class_uuid: str, name: str, underlying_type: str, 
+                               access_specifier: str = 'public', file: str = None, 
+                               line: int = None, end_line: int = None, doc_comment: str = None) -> int:
+        """Store a class member type alias (typedef or using inside a class)
+        
+        Args:
+            class_uuid: UUID of the class containing the type alias
+            name: Name of the type alias
+            underlying_type: The underlying/aliased type
+            access_specifier: Access level (public, protected, private)
+            file: Source file path
+            line: Starting line number
+            end_line: Ending line number
+            doc_comment: Documentation comment
+            
+        Returns:
+            ID of the inserted member type or -1 on error
+        """
+        try:
+            self.cursor.execute(
+                """INSERT INTO class_member_types
+                (class_uuid, name, underlying_type, access_specifier, file, line, end_line, doc_comment)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (class_uuid, name, underlying_type, access_specifier, file, line, end_line, doc_comment)
+            )
+            self.conn.commit()
+            return self.cursor.lastrowid
+        except sqlite3.Error as e:
+            logger.error(f"Error storing class member type: {e}")
+            return -1
+            
+    def get_class_member_types(self, class_uuid: str) -> List[Dict[str, Any]]:
+        """Get all member type aliases for a specific class
+        
+        Args:
+            class_uuid: UUID of the class
+            
+        Returns:
+            List of dictionaries with member type information
+        """
+        try:
+            self.cursor.execute(
+                """SELECT id, name, underlying_type, access_specifier, file, line, end_line, doc_comment
+                FROM class_member_types WHERE class_uuid = ? ORDER BY name""",
+                (class_uuid,)
+            )
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving class member types: {e}")
+            return []
             
     def _get_entity_documentation(self, entity_uuid: str) -> Optional[str]:
         """Get documentation for an entity if available
