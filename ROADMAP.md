@@ -11,8 +11,8 @@ are most welcome.
     - [x] Basic class/struct declarations
     - [x] Single/multiple inheritance
     - [x] Access specifiers
-    - [ ] Subclasses
-    - [ ] class/struct member data
+    - [x] Subclasses
+    - [x] class/struct member data
   - [x] Templates
     - [x] Function templates
     - [x] Class templates
@@ -21,7 +21,7 @@ are most welcome.
   - [x] Function/operator overloading
   - [x] Reference parameters/variables
   - [x] Exception handling
-  - [ ] class typedefs/usings
+  - [x] class typedefs/usings
   - [ ] rule-of-5, class copy/move/delete status
   - [ ] singleton? Depending on how hard it is to detect
   - [ ] RAII patterns, with very low priority for now
@@ -84,7 +84,7 @@ are most welcome.
   - [x] c++23: [[assume(cond)]], [[deprecated("reason", "replacement")]]
 
 - OpenFOAM DSL
-  - [ ] RTS
+  - [x] RTS
   - [ ] objectRegistry/regIOobject/IOobject
   - [ ] Serializable to Streams
   - [ ] Can Fatal Error-out
@@ -92,7 +92,7 @@ are most welcome.
 
 - Reflection system recognition
   - [ ] support level for reflection system
-  - [ ] Auto-generate example usage for classes
+  - [x] Auto-generate example usage for classes
 
 - custom injected DSL
   - [x] Plugin system for loading custom DSL feature detection
