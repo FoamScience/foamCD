@@ -157,18 +157,30 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 continue
             entity_uuid = entity.get('uuid')
             if entity_uuid:
-                enclosed_check_db = None
+                entity_db = None
                 try:
-                    enclosed_check_db = EntityDatabase(self.db_path)
-                    if enclosed_check_db.is_enclosed_entity(entity_uuid):
-                        logger.info(f"Skipping enclosed entity: {entity.get('name')} (UUID: {entity_uuid})")
+                    entity_db = EntityDatabase(self.db_path)
+                    if entity_db.is_enclosed_entity(entity_uuid):
                         skipped_count += 1
                         continue
+                    line = entity.get('line')
+                    end_line = entity.get('end_line')
+                    name = entity.get('name')
+                    if line is not None and end_line is not None and (end_line - line) <= 1:
+                        entity_db.cursor.execute(
+                            "SELECT COUNT(*) FROM entities WHERE parent_uuid = ?", (entity_uuid,)
+                        )
+                        child_count = entity_db.cursor.fetchone()[0]
+                        
+                        if child_count == 0:
+                            logger.info(f"Skipping forward declaration: {name} (UUID: {entity_uuid})")
+                            skipped_count += 1
+                            continue
                 except Exception as e:
-                    logger.error(f"Error checking if entity is enclosed: {e}")
+                    logger.error(f"Error checking entity properties: {e}")
                 finally:
-                    if enclosed_check_db and hasattr(enclosed_check_db, 'conn') and enclosed_check_db.conn:
-                        enclosed_check_db.conn.close()
+                    if entity_db and hasattr(entity_db, 'conn') and entity_db.conn:
+                        entity_db.conn.close()
                         
             class_name = entity.get('name')
             import re
