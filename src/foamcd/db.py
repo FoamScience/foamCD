@@ -178,6 +178,25 @@ class EntityDatabase:
             ON decl_def_links (def_uuid)
             ''')
             
+            # Entity enclosing links table - for nested/local/enclosed entities
+            self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS entity_enclosing_links (
+                enclosed_uuid TEXT NOT NULL,
+                enclosing_uuid TEXT NOT NULL,
+                enclosed_kind TEXT NOT NULL,
+                enclosing_kind TEXT NOT NULL,
+                PRIMARY KEY (enclosed_uuid),
+                FOREIGN KEY (enclosed_uuid) REFERENCES entities (uuid) ON DELETE CASCADE,
+                FOREIGN KEY (enclosing_uuid) REFERENCES entities (uuid) ON DELETE CASCADE
+            )
+            ''')
+            
+            # Create index for faster lookup of enclosed entities
+            self.cursor.execute('''
+            CREATE INDEX IF NOT EXISTS idx_entity_enclosing_links_enclosing_uuid 
+            ON entity_enclosing_links (enclosing_uuid)
+            ''')
+            
             # Method classification table
             self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS method_classification (
@@ -383,6 +402,19 @@ class EntityDatabase:
                         if 'access' not in member:
                             member['access'] = access.upper()
                         self.store_entity(member)
+                        
+            if 'custom_fields' in entity and entity.get('custom_fields', {}).get('needs_enclosing_link'):
+                enclosing_link_data = entity['custom_fields']['needs_enclosing_link']
+                try:
+                    self.store_entity_enclosing_link(
+                        uuid,  # enclosed entity
+                        enclosing_link_data['enclosing_uuid'],  # enclosing entity
+                        enclosing_link_data['enclosed_kind'],
+                        enclosing_link_data['enclosing_kind']
+                    )
+                    logger.debug(f"Stored enclosing link for {entity.get('name')}")
+                except Exception as e:
+                    logger.error(f"Error storing enclosing link from custom fields: {e}")
             
             self.conn.commit()
             return uuid
@@ -1451,9 +1483,12 @@ class EntityDatabase:
                 file_filter = "AND file LIKE ? || '%'"
                 file_filter_params = [project_dir]
             query = f"""
-            SELECT uuid, name, file, line, end_line, parent_uuid
-            FROM entities
-            WHERE kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+            SELECT e.uuid, e.name, e.file, e.line, e.end_line, e.parent_uuid
+            FROM entities e
+            LEFT JOIN entity_enclosing_links el ON e.uuid = el.enclosed_uuid
+            WHERE e.kind IN ('CLASS_DECL', 'CLASS_TEMPLATE', 'STRUCT_DECL', 'STRUCT_TEMPLATE')
+            AND el.enclosed_uuid IS NULL  -- This ensures we only get non-enclosed entities
+            AND e.name NOT LIKE '%::%'    -- Extra check to exclude nested classes by name pattern
             {file_filter}
             """
             
@@ -2197,6 +2232,111 @@ class EntityDatabase:
         except sqlite3.Error as e:
             logger.debug(f"Error getting function return type: {e}")
             return None
+            
+    def get_entity(self, uuid: str) -> Optional[Dict[str, Any]]:
+        """Get an entity by its UUID
+        
+        Args:
+            uuid: Entity UUID
+            
+        Returns:
+            Entity dictionary or None if not found
+        """
+        try:
+            self.cursor.execute('''
+            SELECT * FROM entities WHERE uuid = ?
+            ''', (uuid,))
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving entity: {e}")
+            return None
+            
+    def store_entity_enclosing_link(self, enclosed_uuid: str, enclosing_uuid: str, enclosed_kind: str, enclosing_kind: str) -> None:
+        """Store a link between an enclosed entity and its enclosing entity
+        
+        Args:
+            enclosed_uuid: UUID of the enclosed entity (nested class, local class, etc.)
+            enclosing_uuid: UUID of the enclosing entity (parent class, function, etc.)
+            enclosed_kind: Kind of the enclosed entity (e.g., 'CLASS_DECL', 'ENUM_DECL')
+            enclosing_kind: Kind of the enclosing entity (e.g., 'CLASS_DECL', 'FUNCTION_DECL')
+        """
+        try:
+            self.cursor.execute('''
+            INSERT OR REPLACE INTO entity_enclosing_links
+            (enclosed_uuid, enclosing_uuid, enclosed_kind, enclosing_kind)
+            VALUES (?, ?, ?, ?)
+            ''', (enclosed_uuid, enclosing_uuid, enclosed_kind, enclosing_kind))
+            self.conn.commit()
+            logger.debug(f"Stored entity enclosing link: {enclosed_uuid} enclosed by {enclosing_uuid}")
+        except sqlite3.Error as e:
+            logger.error(f"Error storing entity enclosing link: {e}")
+            self.conn.rollback()
+            raise
+            
+    def get_enclosed_entities(self, enclosing_uuid: str) -> List[Dict[str, Any]]:
+        """Get all entities enclosed by a specific entity
+        
+        Args:
+            enclosing_uuid: UUID of the enclosing entity
+            
+        Returns:
+            List of enclosed entities
+        """
+        try:
+            self.cursor.execute('''
+            SELECT e.*, el.enclosed_kind, el.enclosing_kind
+            FROM entity_enclosing_links el
+            JOIN entities e ON el.enclosed_uuid = e.uuid
+            WHERE el.enclosing_uuid = ?
+            ''', (enclosing_uuid,))
+            rows = self.cursor.fetchall()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving enclosed entities: {e}")
+            return []
+            
+    def get_enclosing_entity(self, enclosed_uuid: str) -> Optional[Dict[str, Any]]:
+        """Get the enclosing entity for a specific enclosed entity
+        
+        Args:
+            enclosed_uuid: UUID of the enclosed entity
+            
+        Returns:
+            Enclosing entity or None if not found
+        """
+        try:
+            self.cursor.execute('''
+            SELECT e.*, el.enclosed_kind, el.enclosing_kind
+            FROM entity_enclosing_links el
+            JOIN entities e ON el.enclosing_uuid = e.uuid
+            WHERE el.enclosed_uuid = ?
+            ''', (enclosed_uuid,))
+            row = self.cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving enclosing entity: {e}")
+            return None
+            
+    def is_enclosed_entity(self, entity_uuid: str) -> bool:
+        """Check if an entity is enclosed by another entity
+        
+        Args:
+            entity_uuid: UUID of the entity to check
+            
+        Returns:
+            True if the entity is enclosed, False otherwise
+        """
+        try:
+            self.cursor.execute('''
+            SELECT COUNT(*) FROM entity_enclosing_links
+            WHERE enclosed_uuid = ?
+            ''', (entity_uuid,))
+            count = self.cursor.fetchone()[0]
+            return count > 0
+        except sqlite3.Error as e:
+            logger.error(f"Error checking if entity is enclosed: {e}")
+            return False
             
     def _get_entity_documentation(self, entity_uuid: str) -> Optional[str]:
         """Get documentation for an entity if available

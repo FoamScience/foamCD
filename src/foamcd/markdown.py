@@ -155,6 +155,21 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         for entity in class_entities:
             if not entity.get('name'):
                 continue
+            entity_uuid = entity.get('uuid')
+            if entity_uuid:
+                enclosed_check_db = None
+                try:
+                    enclosed_check_db = EntityDatabase(self.db_path)
+                    if enclosed_check_db.is_enclosed_entity(entity_uuid):
+                        logger.info(f"Skipping enclosed entity: {entity.get('name')} (UUID: {entity_uuid})")
+                        skipped_count += 1
+                        continue
+                except Exception as e:
+                    logger.error(f"Error checking if entity is enclosed: {e}")
+                finally:
+                    if enclosed_check_db and hasattr(enclosed_check_db, 'conn') and enclosed_check_db.conn:
+                        enclosed_check_db.conn.close()
+                        
             class_name = entity.get('name')
             import re
             # TODO: manually excluding add.*ConstructorToTable feels wrong
@@ -230,6 +245,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     "protected_methods": self._get_entity_protected_methods(entity),
                     "private_bases": self._get_entity_private_bases(entity),
                     "private_methods": self._get_entity_private_methods(entity),
+                    "enclosed_entities": self._get_entity_enclosed_entities(entity),
                     "mpi_comms": self._get_entity_mpi_comms(entity)
                 }
             }
@@ -1860,6 +1876,103 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 
         return private_methods
         
+    def _get_entity_enclosed_entities(self, entity):
+        """Get entities enclosed by this entity (nested classes, enums, etc.)
+        
+        Args:
+            entity: The entity dictionary
+            
+        Returns:
+            List of enclosed entities with comprehensive details for documentation
+        """
+        if not entity:
+            return []
+        uuid = entity.get("uuid")
+        if not uuid:
+            return []
+            
+        try:
+            db = None
+            db = EntityDatabase(self.db_path)
+            
+            try:
+                logger.info(f"Retrieving enclosed entities for {entity.get('name')} (UUID: {uuid})")
+                db.cursor.execute("""
+                SELECT e.*, 'enclosed' as enclosed_kind, el.enclosing_kind
+                FROM entity_enclosing_links el
+                JOIN entities e ON el.enclosed_uuid = e.uuid
+                WHERE el.enclosing_uuid = ?
+                """, (uuid,))
+                enclosed_entities = [dict(row) for row in db.cursor.fetchall()]
+                logger.info(f"Found {len(enclosed_entities)} enclosed entities in database")
+                
+                if not enclosed_entities and entity.get('name'):
+                    enclosing_name = entity.get('name')
+                    logger.info(f"No enclosed entities found in links table, trying name-based detection for {enclosing_name}")
+                    name_pattern = f"{enclosing_name}::%"
+                    db.cursor.execute("""
+                    SELECT *, 'enclosed' as enclosed_kind, 'name_pattern' as enclosing_kind
+                    FROM entities
+                    WHERE name LIKE ? AND kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE', 'ENUM_DECL')
+                    """, (name_pattern,))
+                    enclosed_entities = [dict(row) for row in db.cursor.fetchall()]
+                    logger.info(f"Found {len(enclosed_entities)} enclosed entities by name pattern")
+            except Exception as query_error:
+                logger.error(f"Error in direct query for enclosed entities: {query_error}")
+                enclosed_entities = db.get_enclosed_entities(uuid)
+            
+            if not enclosed_entities:
+                return []
+                
+            result = []
+            for enclosed in enclosed_entities:
+                # Get detailed information for each enclosed entity
+                enclosed_uuid = enclosed.get('uuid')
+                enclosed_name = enclosed.get('name')
+                if not enclosed_uuid:
+                    continue
+                complete_entity = db.get_entity_by_uuid(enclosed_uuid, include_children=True)
+                if not complete_entity:
+                    transformed = {
+                        'uuid': enclosed_uuid,
+                        'name': enclosed_name,
+                        'kind': enclosed.get('kind'),
+                        'enclosed_kind': enclosed.get('enclosed_kind'),
+                        'access': enclosed.get('access'),
+                        'file': enclosed.get('file'),
+                        'line': enclosed.get('line'),
+                        'end_line': enclosed.get('end_line'),
+                        'doc_comment': enclosed.get('doc_comment')
+                    }
+                else:
+                    transformed = self._transform_entity_paths(complete_entity)
+                    transformed['enclosed_kind'] = enclosed.get('enclosed_kind')
+                    transformed['enclosing_kind'] = enclosed.get('enclosing_kind')
+                    if transformed.get('kind') in ['CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE']:
+                        transformed['constructors'] = self._get_entity_constructors(complete_entity)
+                        transformed['factory_methods'] = self._get_entity_factory_methods(complete_entity)
+                        transformed['dtor'] = self._get_entity_destructor(complete_entity)
+                        transformed['public_methods'] = self._get_entity_public_methods(complete_entity)
+                        transformed['protected_methods'] = self._get_entity_protected_methods(complete_entity)
+                        transformed['private_methods'] = self._get_entity_private_methods(complete_entity)
+                        transformed['static_methods'] = self._get_entity_static_methods(complete_entity)
+                        transformed['abstract_methods'] = self._get_entity_abstract_methods(complete_entity)
+                        transformed['documentation'] = self._format_entity_documentation(complete_entity)
+                    elif transformed.get('kind') == 'ENUM_DECL':
+                        try:
+                            transformed['enum_constants'] = db.get_enum_constants(enclosed_uuid)
+                        except Exception as e:
+                            logger.error(f"Error getting enum constants: {e}")
+                            transformed['enum_constants'] = []
+                result.append(transformed)
+            return result
+        except Exception as e:
+            logger.error(f"Error retrieving detailed enclosed entities: {e}")
+            return []
+        finally:
+            if db:
+                db.close()
+                
     def _get_entity_mpi_comms(self, entity: Dict[str, Any]) -> Dict[str, bool]:
         """Get MPI communication details for an entity
         

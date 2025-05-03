@@ -1199,6 +1199,21 @@ class ClangParser:
                     return
                 if parent:
                     parent.add_child(entity)
+                    if cursor.semantic_parent and cursor.kind in [
+                        CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, CursorKind.CLASS_TEMPLATE,
+                        CursorKind.ENUM_DECL
+                    ] and parent.kind in [
+                        CursorKind.CLASS_DECL, CursorKind.STRUCT_DECL, CursorKind.CLASS_TEMPLATE,
+                        CursorKind.FUNCTION_DECL, CursorKind.CXX_METHOD, CursorKind.CONSTRUCTOR,
+                        CursorKind.FUNCTION_TEMPLATE
+                    ]:
+                        entity.custom_fields = entity.custom_fields or {}
+                        entity.custom_fields['needs_enclosing_link'] = {
+                            'enclosing_uuid': parent.uuid,
+                            'enclosed_kind': str(entity.kind),
+                            'enclosing_kind': str(parent.kind)
+                        }
+                        logger.debug(f"Marked for enclosing link: {entity.name} enclosed by {parent.name}")
                 else:
                     entities.append(entity)
                 for child in cursor.get_children():
@@ -1299,11 +1314,166 @@ class ClangParser:
         logger.info(f"Resolved parent UUIDs for {resolved_count} out of {len(template_functions)} template functions")
         self.db.commit()
     
-    def resolve_inheritance_relationships(self) -> None:
-        """Resolve all inheritance relationships after all files have been parsed
+    def resolve_enclosing_relationships(self):
+        """Resolve enclosing entity relationships (nested classes, enums, etc.)
         
         This method should be called after all files have been parsed to ensure
-        all entities are available for resolving inheritance relationships.
+        all entities are available in the database for establishing enclosing relationships.
+        It identifies nested/enclosed entities based on their context and establishes
+        the appropriate enclosing relationships in the database.
+        """
+        if not self.db:
+            logger.warning("No database available, skipping enclosing relationship resolution")
+            return
+            
+        logger.info("Resolving enclosing entity relationships...")
+        try:
+            self.db.cursor.execute('''
+            SELECT e1.uuid as enclosed_uuid, e1.kind as enclosed_kind, e1.name as enclosed_name,
+                   e2.uuid as enclosing_uuid, e2.kind as enclosing_kind, e2.name as enclosing_name
+            FROM entities e1, entities e2
+            WHERE e1.name LIKE e2.name || '::%'
+              AND e1.uuid != e2.uuid
+              AND e2.kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE')
+              AND e1.kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE', 'ENUM_DECL')
+            ''')
+            name_based_relationships = self.db.cursor.fetchall()
+            created_count = 0
+            logger.debug(f"Found {len(name_based_relationships)} potential name-based nested relationships")
+            for row in name_based_relationships:
+                enclosed_uuid = row['enclosed_uuid']
+                enclosing_uuid = row['enclosing_uuid']
+                enclosed_kind = row['enclosed_kind']
+                enclosing_kind = row['enclosing_kind']
+                enclosed_name = row['enclosed_name']
+                enclosing_name = row['enclosing_name']
+                
+                # Verify this is truly a nested class by checking the name pattern
+                if enclosed_name.startswith(enclosing_name + '::'):
+                    try:
+                        self.db.store_entity_enclosing_link(
+                            enclosed_uuid, enclosing_uuid, enclosed_kind, enclosing_kind
+                        )
+                        created_count += 1
+                        logger.debug(f"Created name-based enclosing relationship: {enclosed_name} enclosed by {enclosing_name}")
+                    except Exception as e:
+                        logger.error(f"Error creating name-based enclosing relationship for {enclosed_name}: {e}")
+                else:
+                    logger.debug(f"Skipping false positive: {enclosed_name} not directly nested in {enclosing_name}")
+            self.db.cursor.execute('''
+            SELECT e1.uuid as enclosed_uuid, e1.kind as enclosed_kind, e1.name as enclosed_name,
+                   e2.uuid as enclosing_uuid, e2.kind as enclosing_kind, e2.name as enclosing_name,
+                   e1.file, e1.line, e1.end_line, e2.line as enclosing_line, e2.end_line as enclosing_end_line
+            FROM entities e1
+            JOIN entities e2 ON e1.file = e2.file
+                AND e1.line > e2.line 
+                AND e1.line < e2.end_line
+                AND e1.uuid != e2.uuid
+                AND e2.kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE', 'FUNCTION_DECL', 'CXX_METHOD', 'FUNCTION_TEMPLATE')
+                AND e1.kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE', 'ENUM_DECL')
+            ''') 
+            location_based_relationships = self.db.cursor.fetchall()
+            logger.debug(f"Found {len(location_based_relationships)} potential location-based nested relationships")
+            innermost_enclosers = {}
+            for row in location_based_relationships:
+                enclosed_uuid = row['enclosed_uuid']
+                enclosing_uuid = row['enclosing_uuid']
+                enclosed_line = row['line']
+                enclosing_line = row['enclosing_line']
+                enclosing_end_line = row['enclosing_end_line']
+                if enclosed_uuid in innermost_enclosers:
+                    current_range = innermost_enclosers[enclosed_uuid]['range']
+                    new_range = enclosing_end_line - enclosing_line
+                    if new_range < current_range:
+                        innermost_enclosers[enclosed_uuid] = {
+                            'enclosing_uuid': enclosing_uuid,
+                            'enclosed_kind': row['enclosed_kind'],
+                            'enclosing_kind': row['enclosing_kind'],
+                            'enclosed_name': row['enclosed_name'],
+                            'enclosing_name': row['enclosing_name'],
+                            'range': new_range
+                        }
+                else:
+                    innermost_enclosers[enclosed_uuid] = {
+                        'enclosing_uuid': enclosing_uuid,
+                        'enclosed_kind': row['enclosed_kind'],
+                        'enclosing_kind': row['enclosing_kind'],
+                        'enclosed_name': row['enclosed_name'],
+                        'enclosing_name': row['enclosing_name'],
+                        'range': enclosing_end_line - enclosing_line
+                    }
+            for enclosed_uuid, info in innermost_enclosers.items():
+                enclosing_uuid = info['enclosing_uuid']
+                enclosed_kind = info['enclosed_kind']
+                enclosing_kind = info['enclosing_kind']
+                enclosed_name = info['enclosed_name']
+                enclosing_name = info['enclosing_name']
+                self.db.cursor.execute('''
+                SELECT 1 FROM entity_enclosing_links 
+                WHERE enclosed_uuid = ? AND enclosing_uuid = ?
+                ''', (enclosed_uuid, enclosing_uuid))
+                if self.db.cursor.fetchone():
+                    continue
+                    
+                try:
+                    self.db.store_entity_enclosing_link(
+                        enclosed_uuid, enclosing_uuid, enclosed_kind, enclosing_kind
+                    )
+                    created_count += 1
+                    logger.debug(f"Created location-based enclosing relationship: {enclosed_name} enclosed by {enclosing_name}")
+                except Exception as e:
+                    logger.error(f"Error creating location-based enclosing relationship for {enclosed_name}: {e}")
+            self.db.cursor.execute('''
+            SELECT uuid, name, kind, file, line, end_line
+            FROM entities
+            WHERE name LIKE '%::%'
+              AND kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE', 'ENUM_DECL')
+            ''')
+            scoped_entities = self.db.cursor.fetchall()
+            logger.debug(f"Found {len(scoped_entities)} entities with scope resolution in name")
+            
+            for entity in scoped_entities:
+                name = entity['name']
+                self.db.cursor.execute('''
+                SELECT 1 FROM entity_enclosing_links WHERE enclosed_uuid = ?
+                ''', (entity['uuid'],))
+                if self.db.cursor.fetchone():
+                    continue
+                if '::' in name:
+                    parts = name.split('::')
+                    if len(parts) == 2:
+                        enclosing_name = parts[0]
+                        self.db.cursor.execute('''
+                        SELECT uuid, kind FROM entities 
+                        WHERE name = ? AND kind IN ('CLASS_DECL', 'STRUCT_DECL', 'CLASS_TEMPLATE')
+                        ''', (enclosing_name,))
+                        potential_enclosers = self.db.cursor.fetchall()
+                        
+                        if potential_enclosers:
+                            enclosing_entity = potential_enclosers[0]
+                            try:
+                                self.db.store_entity_enclosing_link(
+                                    entity['uuid'], 
+                                    enclosing_entity['uuid'], 
+                                    entity['kind'], 
+                                    enclosing_entity['kind']
+                                )
+                                created_count += 1
+                                logger.debug(f"Created explicit scope enclosing relationship: {name} enclosed by {enclosing_name}")
+                            except Exception as e:
+                                logger.error(f"Error creating scope-based enclosing relationship for {name}: {e}")
+            
+            logger.info(f"Created {created_count} enclosing entity relationships in total")
+        except Exception as e:
+            logger.error(f"Error resolving enclosing relationships: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    def resolve_inheritance_relationships(self):
+        """Resolve inheritance relationships between entities
+        
+        This should be called after all files have been parsed to ensure all classes
+        and their base classes are available in the database for resolution.
         """
         if not self.db:
             logger.warning("Cannot resolve inheritance relationships without a database")
@@ -1908,9 +2078,10 @@ def main():
             
             logger.info(f"Processing complete: {parsed_count} parsed, {unchanged_count} unchanged, {error_count} errors (from {len(target_files)} total files)")
         
-        logger.info("Resolving inheritance relationships between entities...")
         parser.resolve_scoped_template_functions()
         parser.resolve_inheritance_relationships()
+        parser.resolve_enclosing_relationships()
+        
         logger.info(f"Parsed {len(parser.entities)} files with {sum(len(entities) for entities in parser.entities.values())} top-level entities")
         
         logger.info("Parsing complete")

@@ -102,7 +102,36 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
             project_dir=effective_project_dir
         )
         processed_class_stats = []
+        enclosed_uuids = set()
+        try:
+            self.db.cursor.execute('SELECT enclosed_uuid FROM entity_enclosing_links')
+            for row in self.db.cursor.fetchall():
+                enclosed_uuids.add(row[0])
+            logger.info(f"Found {len(enclosed_uuids)} enclosed entities in the database")
+        except Exception as e:
+            logger.error(f"Error querying enclosed entities: {e}")
+        name_based_enclosures = set()
         for entity in nested_class_stats:
+            name = entity.get('name', '')
+            if '::' in name:
+                name_based_enclosures.add(entity.get('uuid'))
+                logger.debug(f"Identified name-based enclosed entity: {name}")
+        filtered_class_stats = []
+        for entity in nested_class_stats:
+            entity_uuid = entity.get('uuid')
+            name = entity.get('name', '')
+            if entity_uuid in enclosed_uuids:
+                continue
+            elif entity_uuid in name_based_enclosures:
+                continue
+            elif '::' in name:
+                continue
+            if entity_uuid and self.db.is_enclosed_entity(entity_uuid):
+                logger.info(f"Filtering out enclosed entity {name} (method check) from class index")
+                continue
+            filtered_class_stats.append(entity)
+        
+        for entity in filtered_class_stats:
             processed_entity = self._transform_nested_entity(entity)
             processed_class_stats.append(processed_entity)
         class_stats = ClassHierarchyFlattener.flatten_class_stats(processed_class_stats)
