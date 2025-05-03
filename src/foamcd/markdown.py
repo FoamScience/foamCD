@@ -254,10 +254,18 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         "static_methods": self._get_entity_static_methods(entity),
                         "abstract_methods": self._get_entity_abstract_methods(entity),
                         "abstract_in_base_methods": self._get_entity_abstract_in_base_methods(entity),
-                        "public_methods": self._get_entity_public_methods(entity),
-                        "public_fields": self._get_entity_public_fields(entity)
+                        "public_methods": self._get_entity_public_methods(entity)
                     },
-                    "member_type_aliases": self._get_entity_member_type_aliases(entity),
+                    "fields": {
+                        "public": self._get_entity_public_fields(entity),
+                        "protected": self._get_entity_protected_fields(entity),
+                        "private": self._get_entity_private_fields(entity)
+                    },
+                    "member_type_aliases": {
+                        "public": self._get_entity_public_member_type_aliases(entity),
+                        "protected": self._get_entity_protected_member_type_aliases(entity),
+                        "private": self._get_entity_private_member_type_aliases(entity)
+                    },
                     "openfoam_dsl": {
                         "RTS": self._get_entity_rts_info(entity),
                         "reflection": self._get_entity_reflection_info(entity)
@@ -266,10 +274,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     "knowledge_requirements": self._get_entity_knowledge_requirements(entity),
                     "protected_bases": self._get_entity_protected_bases(entity),
                     "protected_methods": self._get_entity_protected_methods(entity),
-                    "protected_fields": self._get_entity_protected_fields(entity),
                     "private_bases": self._get_entity_private_bases(entity),
                     "private_methods": self._get_entity_private_methods(entity),
-                    "private_fields": self._get_entity_private_fields(entity),
                     "enclosed_entities": self._get_entity_enclosed_entities(entity),
                     "mpi_comms": self._get_entity_mpi_comms(entity)
                 }
@@ -1924,10 +1930,13 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "default_value": field.get("field_info", {}).get("default_value", ""),
             "doc_comment": field.get("doc_comment", "")
         }
-        field_info["file"] = self._transform_file_path(file_path=field.get("file", ""),
-                                              name=field.get("name", ""),
-                                              template_pattern="filename_uri",
-                                              entity=field_info)
+        transformed_url, _ = self._transform_file_path(
+            file_path=field.get("file", ""),
+            name=field.get("name", ""),
+            template_pattern="filename_uri",
+            entity=field_info
+        )
+        field_info["file"] = transformed_url
         if field.get("parsed_doc"):
             field_info["documentation"] = field.get("parsed_doc", {})
             
@@ -1997,31 +2006,28 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             private_fields.append(field_info)
         return private_fields
         
-    def _get_entity_member_type_aliases(self, entity: Dict[str, Any]) -> Dict[str, List[Dict[str, Any]]]:
-        """Get all member type aliases (typedefs or using declarations) for a class,
-        categorized by access level
+    def _get_member_type_aliases_by_access(self, entity: Dict[str, Any], access_level: str) -> List[Dict[str, Any]]:
+        """Get member type aliases (typedefs or using declarations) for a class by access level
         
         Args:
             entity: Entity dictionary
+            access_level: The access level to filter by ('public', 'protected', or 'private')
             
         Returns:
-            Dictionary containing public, protected, and private type aliases
+            List of type aliases with the specified access level
         """
-        result = {
-            "public": [],
-            "protected": [],
-            "private": []
-        }
-        
+        type_aliases = []
         uuid = entity.get("uuid")
         if not uuid:
-            return result
+            return type_aliases
             
         try:
             db = EntityDatabase(self.db_path)
             member_types = db.get_class_member_types(uuid)
             for type_alias in member_types:
-                access = type_alias.get("access_specifier", "public").lower()
+                alias_access = type_alias.get("access_specifier", "public").lower()
+                if alias_access != access_level.lower():
+                    continue
                 if type_alias.get("file"):
                     file_path = type_alias["file"]
                     line = type_alias.get("line")
@@ -2035,15 +2041,43 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         entity=entity
                     )
                     type_alias["file"] = transformed_url
-                if access == "public":
-                    result["public"].append(type_alias)
-                elif access == "protected":
-                    result["protected"].append(type_alias)
-                elif access == "private":
-                    result["private"].append(type_alias)
+                type_aliases.append(type_alias)
         except Exception as e:
-            logger.error(f"Error retrieving member type aliases: {e}")
-        return result
+            logger.error(f"Error retrieving {access_level} member type aliases: {e}")
+        return type_aliases
+    
+    def _get_entity_public_member_type_aliases(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get public member type aliases for a class
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            List of public member type aliases
+        """
+        return self._get_member_type_aliases_by_access(entity, "public")
+    
+    def _get_entity_protected_member_type_aliases(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get protected member type aliases for a class
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            List of protected member type aliases
+        """
+        return self._get_member_type_aliases_by_access(entity, "protected")
+    
+    def _get_entity_private_member_type_aliases(self, entity: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Get private member type aliases for a class
+        
+        Args:
+            entity: Entity dictionary
+            
+        Returns:
+            List of private member type aliases
+        """  
+        return self._get_member_type_aliases_by_access(entity, "private")
         
     def _get_entity_enclosed_entities(self, entity):
         """Get entities enclosed by this entity (nested classes, enums, etc.)
@@ -2126,10 +2160,16 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         transformed['private_methods'] = self._get_entity_private_methods(complete_entity)
                         transformed['static_methods'] = self._get_entity_static_methods(complete_entity)
                         transformed['abstract_methods'] = self._get_entity_abstract_methods(complete_entity)
-                        transformed['public_fields'] = self._get_entity_public_fields(complete_entity)
-                        transformed['protected_fields'] = self._get_entity_protected_fields(complete_entity)
-                        transformed['private_fields'] = self._get_entity_private_fields(complete_entity)
-                        transformed['member_type_aliases'] = self._get_entity_member_type_aliases(complete_entity)
+                        transformed['fields'] = {
+                            'public': self._get_entity_public_fields(complete_entity),
+                            'protected': self._get_entity_protected_fields(complete_entity),
+                            'private': self._get_entity_private_fields(complete_entity)
+                        }
+                        transformed['member_type_aliases'] = {
+                            'public': self._get_entity_public_member_type_aliases(complete_entity),
+                            'protected': self._get_entity_protected_member_type_aliases(complete_entity),
+                            'private': self._get_entity_private_member_type_aliases(complete_entity)
+                        }
                         transformed['documentation'] = self._format_entity_documentation(complete_entity)
                     elif transformed.get('kind') == 'ENUM_DECL':
                         try:
