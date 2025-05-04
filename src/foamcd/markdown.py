@@ -167,11 +167,22 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             entity_uuid = entity.get('uuid')
             if entity_uuid:
                 entity_db = None
+                enclosed_entity_info = None
                 try:
                     entity_db = EntityDatabase(self.db_path)
                     if entity_db.is_enclosed_entity(entity_uuid):
-                        skipped_count += 1
-                        continue
+                        enclosing_info = entity_db.get_enclosing_entity(entity_uuid)
+                        if enclosing_info:
+                            enclosed_entity_info = {
+                                'enclosing_name': enclosing_info.get('name'),
+                                'enclosing_uuid': enclosing_info.get('uuid'),
+                                'enclosing_namespace': ''
+                            }
+                            enclosing_parent_uuid = enclosing_info.get('parent_uuid')
+                            if enclosing_parent_uuid:
+                                enclosed_entity_info['enclosing_namespace'] = entity_db._get_namespace_path(enclosing_parent_uuid)
+                    
+                    # Skip forward declarations regardless of whether they're enclosed
                     line = entity.get('line')
                     end_line = entity.get('end_line')
                     name = entity.get('name')
@@ -182,7 +193,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         child_count = entity_db.cursor.fetchone()[0]
                         
                         if child_count == 0:
-                            logger.info(f"Skipping forward declaration: {name} (UUID: {entity_uuid})")
+                            logger.info(f"Skipping forward declaration: {name} (UUID: {entity_uuid})") 
                             skipped_count += 1
                             continue
                 except Exception as e:
@@ -218,6 +229,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 filename = f"{namespace_filename}_{class_name}.md"
             else:
                 filename = f"{class_name}.md"
+            filename = filename.replace('::', '_')
                 
             protected_files = ['_index.md', 'functions.md', 'concepts.md']
             if filename in protected_files:
@@ -315,6 +327,28 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             class_name = entity.get('name')
             if re.match(r'add.*ConstructorToTable', class_name):
                 continue
+            entity_uuid = entity.get('uuid')
+            is_enclosed = False
+            enclosed_namespace = None
+            if entity_uuid:
+                try:
+                    enclosed_db = EntityDatabase(self.db_path)
+                    if enclosed_db.is_enclosed_entity(entity_uuid):
+                        is_enclosed = True
+                        enclosing_info = enclosed_db.get_enclosing_entity(entity_uuid)
+                        if enclosing_info:
+                            enclosing_name = enclosing_info.get('name')
+                            enclosing_parent_uuid = enclosing_info.get('parent_uuid')
+                            enclosing_namespace = ''
+                            if enclosing_parent_uuid:
+                                enclosing_namespace = enclosed_db._get_namespace_path(enclosing_parent_uuid)
+                            if enclosing_namespace:
+                                enclosed_namespace = f"{enclosing_namespace}::{enclosing_name}"
+                            else:
+                                enclosed_namespace = enclosing_name
+                finally:
+                    if 'enclosed_db' in locals() and enclosed_db and hasattr(enclosed_db, 'conn') and enclosed_db.conn:
+                        enclosed_db.conn.close()
             namespace = ''
             parent_uuid = entity.get('parent_uuid')
             if parent_uuid:
@@ -329,7 +363,9 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 filename = f"{namespace_filename}_{class_name}.md"
             else:
                 filename = f"{class_name}.md"
+            filename = filename.replace("::", "_")
             valid_entity_filenames.add(filename)
+            logger.debug(f"Added '{filename}' to valid entity filenames list")
         
         # Now check for stale files that need to be removed
         removed_count = 0
@@ -428,6 +464,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         
         This extracts documentation from the entity's 'documentation' field
         which is populated from the parsed_docs table and related doc tables.
+        It also handles raw doc_comment fields to ensure all inline comments
+        are properly included in the output.
         
         Args:
             entity: Entity dictionary
@@ -443,7 +481,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "since": ""
         }
         
+        # First check if we have parsed documentation
+        has_parsed_docs = False
         if "documentation" in entity and isinstance(entity["documentation"], dict):
+            has_parsed_docs = True
             doc = entity["documentation"]
             for field in ["description", "returns", "deprecated", "since"]:
                 if field in doc and doc[field]:
@@ -458,6 +499,26 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 del result["tags"]
             if "params" in doc and isinstance(doc["params"], dict):
                 result["params"] = doc["params"]
+                
+        if "parsed_doc" in entity and isinstance(entity["parsed_doc"], dict):
+            has_parsed_docs = True
+            doc = entity["parsed_doc"]
+            for field in ["description", "returns", "deprecated", "since"]:
+                if field in doc and doc[field] and not result[field]:
+                    result[field] = doc[field]
+            if not "tags" in result:
+                result["tags"] = {}
+            for tag_name in ["brief", "note", "warning", "todo", "attention"]:
+                if tag_name in doc and doc[tag_name] and tag_name not in result["tags"]:
+                    result["tags"][tag_name] = doc[tag_name]
+            if "tags" in doc and isinstance(doc["tags"], dict):
+                for tag, value in doc["tags"].items():
+                    if tag not in result["tags"]:
+                        result["tags"][tag] = value
+            if not result["tags"]:
+                del result["tags"]
+            if "params" in doc and isinstance(doc["params"], dict) and not result["params"]:
+                result["params"] = doc["params"]
         if not result["description"] and entity.get("doc_comment"):
             doc_comment = entity["doc_comment"]
             desc_lines = []
@@ -466,6 +527,10 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     break
                 desc_lines.append(line)
             result["description"] = '\n'.join(desc_lines).strip() or doc_comment
+
+        if (entity.get("kind") in ["TYPEDEF_DECL", "TYPE_ALIAS_DECL", "FIELD_DECL"] and 
+                not result["description"] and entity.get("doc_comment")):
+            result["description"] = entity["doc_comment"]
             
         if entity.get("deprecated_message") and not result["deprecated"]:
             result["deprecated"] = entity.get("deprecated_message")
@@ -1915,7 +1980,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             field: Field entity dictionary
             
         Returns:
-            Formatted field information dictionary
+            Formatted field information dictionary with properly included documentation
         """
         field_info = {
             "name": field.get("name", ""),
@@ -1937,8 +2002,24 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             entity=field_info
         )
         field_info["file"] = transformed_url
+        
+        # Handling inline docs
+        has_docs = False
+        field_info["documentation"] = {
+            "description": ""
+        }
+        
+        # First check if we have parsed_doc
         if field.get("parsed_doc"):
-            field_info["documentation"] = field.get("parsed_doc", {})
+            has_docs = True
+            parsed_doc = field.get("parsed_doc", {})
+            field_info["documentation"].update(parsed_doc)
+        
+        # If we don't have a proper description but have a doc_comment, use that
+        if (not field_info["documentation"].get("description") and 
+                field.get("doc_comment")):
+            field_info["documentation"]["description"] = field.get("doc_comment")
+            has_docs = True
             
         return field_info
     
@@ -2041,6 +2122,12 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                         entity=entity
                     )
                     type_alias["file"] = transformed_url
+                doc_comment = type_alias.get("doc_comment", "")
+                if doc_comment:
+                    type_alias["documentation"] = {
+                        "description": doc_comment.strip()
+                    }
+                    
                 type_aliases.append(type_alias)
         except Exception as e:
             logger.error(f"Error retrieving {access_level} member type aliases: {e}")

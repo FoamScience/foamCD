@@ -109,7 +109,7 @@ class MarkdownGeneratorBase:
             return file_path, None
         if not file_path:
             return file_path, None
-        untemplated_name = name.split('<')[0]
+        untemplated_name = name.split('<')[0].replace("::", "_")
 
         effective_namespace = entity.get('namespace') if entity else None
         context = {

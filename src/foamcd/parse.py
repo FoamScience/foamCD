@@ -1355,6 +1355,11 @@ class ClangParser:
                         CursorKind.FUNCTION_DECL, CursorKind.CXX_METHOD, CursorKind.CONSTRUCTOR,
                         CursorKind.FUNCTION_TEMPLATE
                     ]:
+                        if not entity.name.startswith(f"{parent.name}::"):
+                            base_name = entity.name.split('::')[-1]
+                            new_name = f"{parent.name}::{base_name}"
+                            logger.debug(f"Renaming enclosed entity from '{entity.name}' to '{new_name}'")
+                            entity.name = new_name
                         entity.custom_fields = entity.custom_fields or {}
                         entity.custom_fields['needs_enclosing_link'] = {
                             'enclosing_uuid': parent.uuid,
@@ -1502,6 +1507,16 @@ class ClangParser:
                         self.db.store_entity_enclosing_link(
                             enclosed_uuid, enclosing_uuid, enclosed_kind, enclosing_kind
                         )
+                        if not enclosed_name.startswith(f"{enclosing_name}::"): 
+                            base_name = enclosed_name.split('::')[-1]
+                            new_name = f"{enclosing_name}::{base_name}"
+                            self.db.cursor.execute('''
+                            UPDATE entities 
+                            SET name = ? 
+                            WHERE uuid = ?
+                            ''', (new_name, enclosed_uuid))
+                            logger.debug(f"Updated enclosed entity name from '{enclosed_name}' to '{new_name}'")
+                        
                         created_count += 1
                         logger.debug(f"Created name-based enclosing relationship: {enclosed_name} enclosed by {enclosing_name}")
                     except Exception as e:
@@ -1567,6 +1582,16 @@ class ClangParser:
                     self.db.store_entity_enclosing_link(
                         enclosed_uuid, enclosing_uuid, enclosed_kind, enclosing_kind
                     )
+                    if not enclosed_name.startswith(f"{enclosing_name}::"):
+                        base_name = enclosed_name.split('::')[-1]
+                        new_name = f"{enclosing_name}::{base_name}"
+                        self.db.cursor.execute('''
+                        UPDATE entities 
+                        SET name = ? 
+                        WHERE uuid = ?
+                        ''', (new_name, enclosed_uuid))
+                        logger.debug(f"Updated enclosed entity name from '{enclosed_name}' to '{new_name}'")
+                    
                     created_count += 1
                     logger.debug(f"Created location-based enclosing relationship: {enclosed_name} enclosed by {enclosing_name}")
                 except Exception as e:
@@ -1606,6 +1631,8 @@ class ClangParser:
                                     entity['kind'], 
                                     enclosing_entity['kind']
                                 )
+                                if not name.startswith(f"{enclosing_name}::"):
+                                    logger.warning(f"Unusual scope name formatting: '{name}' does not start with '{enclosing_name}::'")                                    
                                 created_count += 1
                                 logger.debug(f"Created explicit scope enclosing relationship: {name} enclosed by {enclosing_name}")
                             except Exception as e:
