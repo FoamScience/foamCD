@@ -129,6 +129,24 @@ class ClassIndexGenerator(MarkdownGeneratorBase):
             if entity_uuid and self.db.is_enclosed_entity(entity_uuid):
                 logger.info(f"Filtering out enclosed entity {name} (method check) from class index")
                 continue
+            # Skip forward declarations...
+            import re
+            match = re.search(r'#L(\d+)-L(\d+)', entity.get("declaration_file"))
+            if match:
+                line = int(match.group(1))
+                end_line = int(match.group(2))
+                if ((end_line - line) <= 2 and 
+                    not (line == 1 and end_line == 1)):
+                    if entity_uuid:
+                        self.db.cursor.execute(
+                            "SELECT COUNT(*) FROM entities WHERE parent_uuid = ?", (entity_uuid,)
+                        )
+                        child_count = self.db.cursor.fetchone()[0]
+                        if child_count == 0:
+                            logger.info(f"Skipping declaration file forward declaration: {name} (UUID: {entity_uuid}) from class index")
+                            continue
+                    else:
+                        continue
             filtered_class_stats.append(entity)
         
         for entity in filtered_class_stats:
