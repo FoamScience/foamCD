@@ -1251,11 +1251,10 @@ class EntityDatabase:
             
             entities = []
             for row in self.cursor.fetchall():
-                entity = self.get_entity_by_uuid(row[0])
+                entity = self.get_entity_by_uuid(row[0], include_children=True)
                 if entity:
                     entities.append(entity)
-                    
-            logger.info(f"Found {len(entities)} entities of kinds {kinds} in project directory {project_dir}")
+            logger.info(f"Found {len(entities)} entities of kinds {kinds} in project directory {project_dir} (with children)")
             return entities
         except Exception as e:
             import traceback
