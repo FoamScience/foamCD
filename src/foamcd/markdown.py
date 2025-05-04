@@ -686,7 +686,7 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             "is_const": method_info.get("is_const", False),
             "is_noexcept": method_entity.get("is_noexcept", False),
             "is_deprecated": method_entity.get("is_deprecated", False),
-            "access_specifier": method_entity.get("access_specifier", "public").lower()
+            "access": access  # Use the access variable we already computed
         }
         
         formatted_info["documentation"] = {
@@ -937,7 +937,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                 for child in base_entity.get("children", []):
                     if not child.get("kind", "") in ["CXX_METHOD", "FUNCTION_TEMPLATE"]:
                         continue
-                    if child.get("access_specifier", "public").lower() != "public":
+                    access_specifier = child.get("access_specifier", child.get("access", "public")).lower()
+                    if access_specifier != "public":
                         continue
                     method_name = child.get("name", "")
                     if method_name == base_name or method_name == f"~{base_name}":
@@ -1025,7 +1026,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         for child in entity.get("children", []):
             if not child.get("kind", "") in ["CXX_METHOD", "FUNCTION_TEMPLATE"]:
                 continue
-            if child.get("access_specifier", "public").lower() != "public":
+            access_specifier = child.get("access_specifier", child.get("access", "public")).lower()
+            if access_specifier != "public":
                 continue
             method_info = child.get("method_info", {})
             if method_info.get("is_pure_virtual", False):
@@ -1173,7 +1175,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
             method_name = child.get("name", "")
             if method_name in excluded_methods:
                 continue
-            if child.get("access_specifier", "public").lower() != "public":
+            access_specifier = child.get("access_specifier", child.get("access", "public")).lower()
+            if access_specifier != "public":
                 continue
             public_info = self._format_method_info(child)
             method_entry = None
@@ -1186,7 +1189,11 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     method_entry["overloads"] = []
                 method_entry["overloads"].append(public_info)
             else:
-                new_entry = {"name": method_name, "overloads": [public_info]}
+                new_entry = {
+                    "name": method_name, 
+                    "overloads": [public_info],
+                    "access": "public"  # Explicitly set access in the method entry
+                }
                 public_methods.append(new_entry)
                 
         return public_methods
@@ -1835,7 +1842,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         for child in entity.get("children", []):
             if not child.get("kind", "") in ["CXX_METHOD", "FUNCTION_TEMPLATE"]:
                 continue
-            if child.get("access_specifier", "public").lower() != "protected":
+            access_value = child.get("access_specifier", child.get("access", "public")).lower()
+            if access_value != "protected":
                 continue
             method_name = child.get("name", "")
             if method_name in excluded_methods:
@@ -1855,7 +1863,11 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     method_entry["overloads"] = []
                 method_entry["overloads"].append(protected_info)
             else:
-                new_entry = {"name": method_name, "overloads": [protected_info]}
+                new_entry = {
+                    "name": method_name, 
+                    "overloads": [protected_info],
+                    "access": "protected"  # Explicitly set access in the method entry
+                }
                 protected_methods.append(new_entry)
                 
         return protected_methods
@@ -1953,7 +1965,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         for child in entity.get("children", []):
             if not child.get("kind", "") in ["CXX_METHOD", "FUNCTION_TEMPLATE"]:
                 continue
-            if child.get("access_specifier", "public").lower() != "private":
+            access_value = child.get("access_specifier", child.get("access", "public")).lower()
+            if access_value != "private":
                 continue
             if child.get("name", "") in excludes:
                 continue
@@ -1968,7 +1981,11 @@ class MarkdownGenerator(MarkdownGeneratorBase):
                     method_entry["overloads"] = []
                 method_entry["overloads"].append(method_info)
             else:
-                new_entry = {"name": child.get("name", ""), "overloads": [method_info]}
+                new_entry = {
+                    "name": child.get("name", ""), 
+                    "overloads": [method_info],
+                    "access": "private"  # Explicitly set access in the method entry
+                }
                 private_methods.append(new_entry)
                 
         return private_methods
@@ -2038,7 +2055,8 @@ class MarkdownGenerator(MarkdownGeneratorBase):
         for child in entity.get("children", []):
             if child.get("kind", "") != "FIELD_DECL":
                 continue
-            if child.get("access_specifier", "public").lower() != "public":
+            access_specifier = child.get("access_specifier", child.get("access", "public")).lower()
+            if access_specifier != "public":
                 continue
             field_info = self._format_field_info(child)
             public_fields.append(field_info)
