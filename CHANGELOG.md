@@ -1,3 +1,22 @@
+## 0.1.2 (2025-05-04)
+
+### Feat
+
+- support member type aliases
+- parse class fields
+- skip forward declarations in markdown generation
+- handle enclosed types
+- config generation reads existing configs first
+
+### Fix
+
+- skip forward declarations in class index pages
+- bug with method/field access specifiers
+- bug with reporting class children entities
+- enclosed entities names and scopes
+- markdown output for member fields
+- better handling of scope-resolution notation in method/function definition
+
 ## 0.1.1 (2025-04-29)
 
 ### Feat
